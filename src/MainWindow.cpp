@@ -1135,25 +1135,19 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     tci_.connectToHost(host_->text().trimmed(), quint16(port));
   });
   connect(&tci_, &TCIClient::connected, this, [this] {
-    nativeRttyConfirmed_ = false;
-    nativeRttyCheckPending_ = true;
-    tx_.setNativeRttyConfirmed(false);
+    nativeRttyConfirmed_ = true;   // no longer gated on RTTY_ENABLE; all TCI servers accepted
+    tx_.setNativeRttyConfirmed(true);
     updateConnectionUi(true);
     sendNativeTxParameters();
-    // The TCI client sends rtty_enable:1 after emitting connected().
-    // Never change the SDR mode/offsets or enable TX before confirmation.
-    const quint64 checkGeneration = ++nativeRttyCheckGeneration_;
-    QTimer::singleShot(2000, this, [this, checkGeneration] {
-      if (checkGeneration == nativeRttyCheckGeneration_ && nativeRttyCheckPending_)
-        failNativeRttyCheck();
-    });
+    // rttyPad always uses its own audio engine (miniaudio AFSK via soundcard).
+    // Native RTTY capability of the TCI server is no longer required.
+    beginRttySession();
+    updateTxUi();
     if (QSettings().value(QStringLiteral("rx/show_smeter"), false).toBool())
       tci_.sendText(QStringLiteral("rx_sensors_enable:true,500;"));
   });
   connect(&tci_, &TCIClient::disconnected, this, [this](const QString & error) {
     ++sessionGeneration_;
-    ++nativeRttyCheckGeneration_;
-    nativeRttyCheckPending_ = false;
     nativeRttyConfirmed_ = false;
     tx_.setNativeRttyConfirmed(false);
     sessionRestoring_ = false;
@@ -1166,25 +1160,6 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
   });
   connect(&tci_, &TCIClient::textMessageReceived, this, [this](const QString & message) {
     log_->appendPlainText(QStringLiteral("RX TEXT: %1").arg(message));
-    // A single WebSocket text frame can contain several TCI commands.
-    // Process native-RTTY capability before allowing any session setup.
-    for (const QString &part : message.split(QLatin1Char(';'), Qt::SkipEmptyParts)) {
-      const QString command = part.trimmed();
-      if (command.startsWith(QStringLiteral("RTTY_ENABLE:"), Qt::CaseInsensitive)) {
-        const QString value = command.mid(command.indexOf(QLatin1Char(':')) + 1).trimmed();
-        if (nativeRttyCheckPending_ && value == QStringLiteral("1")) {
-          nativeRttyCheckPending_ = false;
-          nativeRttyConfirmed_ = true;
-          tx_.setNativeRttyConfirmed(true);
-          beginRttySession();
-          updateConnectionUi(true);
-          updateTxUi();
-        } else if (nativeRttyCheckPending_ && value == QStringLiteral("0")) {
-          failNativeRttyCheck();
-          return;
-        }
-      }
-    }
     processTciParameters(message);
   });
   connect(&tci_, &TCIClient::iqFrameReceived, this,
@@ -2309,29 +2284,6 @@ void MainWindow::openAudioSettingsDialog()
 }
 #endif
 
-void MainWindow::failNativeRttyCheck() {
-  if (!nativeRttyCheckPending_) { return; }
-  nativeRttyCheckPending_ = false;
-  ++nativeRttyCheckGeneration_;
-  nativeRttyConfirmed_ = false;
-  tx_.setNativeRttyConfirmed(false);
-  updateTxUi();
-
-  // If audio mode is soundcard (or standalone TX), native RTTY support is
-  // not required — audio is generated locally. Silently continue.
-#ifdef HAVE_STANDALONE_TX
-  if (tx_.mode() == NativeRTTYTx::Mode::Standalone) {
-    return;
-  }
-#endif
-  // Only show the error when the user explicitly chose TCI native RTTY
-  // and the connected server does not support it.
-  tci_.disconnectFromHost();
-  QMessageBox::critical(this, QStringLiteral("TCI Native RTTY Not Supported"),
-                        QStringLiteral("The connected TCI server does not support native RTTY.\n\n"
-                                       "Switch to 'Audio: soundcard' in Setup to use local audio instead.\n\n"
-                                       "Native RTTY is supported by deskHPSDR."));
-}
 
 void MainWindow::beginRttySession() {
   ++sessionGeneration_;

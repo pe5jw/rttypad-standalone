@@ -41,7 +41,6 @@ private:
   void processTciParameters(const QString &message);
   void applyTciPitch();
   void beginRttySession();
-  void failNativeRttyCheck();
   void maybeStartRttySession();
   int tciBandForFrequency(double hz) const;
   void applyPendingBandAutoSetup();
@@ -148,8 +147,6 @@ private:
   int lastAutoSetupBand_ = 0;
   bool pendingAutoSetupBand_ = false;
   bool nativeRttyConfirmed_ = false;
-  bool nativeRttyCheckPending_ = false;
-  quint64 nativeRttyCheckGeneration_ = 0;
   bool sessionStarted_ = false;
   double requestedRttyPitchHz_ = 2210.0;
   bool sessionChangedMode_ = false;
