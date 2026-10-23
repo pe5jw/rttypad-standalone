@@ -1,4 +1,5 @@
-# This is afork from Rttypad bj DL1BZ, its a test to extend rttypad with tx.
+# This is a fork from Rttypad bj DL1BZ,
+# its a test to extend rttypad with tx.
 
 Trying to port the rtty-enigene from deskhpsr to add to rttypad so its works on tci.
 It seams to use portaudo so its als swtched to mniaudio.
