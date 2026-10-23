@@ -28,6 +28,7 @@ if(WITH_STANDALONE_TX)
         src/StandaloneRTTYTx.cpp
         src/StandaloneRTTYRx.cpp
     )
+    # RigctlPtt uses QTcpSocket — always compiled in (not ifdef'd)
     target_include_directories(rtty_standalone PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_compile_definitions(rtty_standalone PUBLIC HAVE_STANDALONE_TX=1)
     # miniaudio needs dl + pthread on Linux, nothing extra on Windows/macOS
@@ -56,6 +57,8 @@ add_executable(rttyPad
     src/TCIClient.h
     src/NativeRTTYTx.cpp
     src/NativeRTTYTx.h
+    src/RigctlPtt.cpp
+    src/RigctlPtt.h
     Resources/icons.qrc
 )
 target_link_libraries(rttyPad PRIVATE Qt6::Widgets Qt6::WebSockets Qt6::Network rtty_core

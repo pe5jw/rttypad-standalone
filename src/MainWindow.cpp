@@ -30,6 +30,7 @@
 #include <QApplication>
 #include <QPixmap>
 #include <QMenu>
+#include <QActionGroup>
 #include <QRegularExpression>
 #include <QSettings>
 #include <QSignalBlocker>
@@ -464,23 +465,85 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
       tx_.setMode(enabled ? NativeRTTYTx::Mode::Standalone : NativeRTTYTx::Mode::TCI);
     });
 
-    // PTT method for soundcard AFSK TX
-    auto *pttTciAction = setupPopup->addAction(QStringLiteral("PTT via TCI (trx:0,true/false)"));
-    pttTciAction->setCheckable(true);
-    const bool pttViaTci = QSettings().value(QStringLiteral("tx/pttViaTci"), true).toBool();
-    pttTciAction->setChecked(pttViaTci);
-    pttTciAction->setToolTip(QStringLiteral(
-        "Send trx:0,true to start TX and trx:0,false to end TX via TCI.\n"
-        "Active only in soundcard AFSK TX mode.\n"
-        "Serial port PTT will be added later."));
-    tx_.setPttMode(pttViaTci ? NativeRTTYTx::PttMode::TCI : NativeRTTYTx::PttMode::None);
-    connect(pttTciAction, &QAction::toggled, this, [this](bool enabled) {
-      QSettings().setValue(QStringLiteral("tx/pttViaTci"), enabled);
-      tx_.setPttMode(enabled ? NativeRTTYTx::PttMode::TCI : NativeRTTYTx::PttMode::None);
+    // PTT method sub-menu for soundcard AFSK TX
+    auto *pttMenu = setupPopup->addMenu(QStringLiteral("PTT method"));
+    pttMenu->setEnabled(useStandalone);
+    connect(txSoundcardAction, &QAction::toggled, pttMenu, &QAction::setEnabled);
+
+    auto *pttGroup = new QActionGroup(pttMenu);
+    pttGroup->setExclusive(true);
+
+    auto makePttAction = [&](const QString &label, NativeRTTYTx::PttMode mode) {
+      auto *act = pttMenu->addAction(label);
+      act->setCheckable(true);
+      pttGroup->addAction(act);
+      return act;
+    };
+
+    auto *pttNoneAct   = makePttAction(QStringLiteral("None (VOX / manual)"),   NativeRTTYTx::PttMode::None);
+    auto *pttTciAct    = makePttAction(QStringLiteral("TCI  (trx:0,true/false)"), NativeRTTYTx::PttMode::TCI);
+    auto *pttSerialAct = makePttAction(QStringLiteral("Serial  (rigctld)"),       NativeRTTYTx::PttMode::Serial);
+    auto *pttBothAct   = makePttAction(QStringLiteral("TCI + Serial"),            NativeRTTYTx::PttMode::TCIAndSerial);
+    pttMenu->addSeparator();
+    auto *pttSettingsAction = pttMenu->addAction(QStringLiteral("PTT / rigctld settings…"));
+
+    // Restore saved PTT mode
+    const int savedPttMode = QSettings().value(QStringLiteral("tx/pttMode"), 1).toInt(); // default TCI
+    NativeRTTYTx::PttMode initPtt = NativeRTTYTx::PttMode::TCI;
+    switch (savedPttMode) {
+    case 0: initPtt = NativeRTTYTx::PttMode::None;         pttNoneAct->setChecked(true);   break;
+    case 1: initPtt = NativeRTTYTx::PttMode::TCI;          pttTciAct->setChecked(true);    break;
+    case 2: initPtt = NativeRTTYTx::PttMode::Serial;       pttSerialAct->setChecked(true); break;
+    case 3: initPtt = NativeRTTYTx::PttMode::TCIAndSerial; pttBothAct->setChecked(true);   break;
+    default: pttTciAct->setChecked(true); break;
+    }
+    tx_.setPttMode(initPtt);
+
+    // Restore rigctld host/port
+    tx_.setRigctlHost(QSettings().value(QStringLiteral("tx/rigctlHost"), QStringLiteral("127.0.0.1")).toString());
+    tx_.setRigctlPort(QSettings().value(QStringLiteral("tx/rigctlPort"), 4532).toInt());
+
+    auto applyPttMode = [this, pttNoneAct, pttTciAct, pttSerialAct, pttBothAct] {
+      NativeRTTYTx::PttMode m = NativeRTTYTx::PttMode::TCI;
+      int idx = 1;
+      if (pttNoneAct->isChecked())   { m = NativeRTTYTx::PttMode::None;         idx = 0; }
+      if (pttTciAct->isChecked())    { m = NativeRTTYTx::PttMode::TCI;          idx = 1; }
+      if (pttSerialAct->isChecked()) { m = NativeRTTYTx::PttMode::Serial;       idx = 2; }
+      if (pttBothAct->isChecked())   { m = NativeRTTYTx::PttMode::TCIAndSerial; idx = 3; }
+      QSettings().setValue(QStringLiteral("tx/pttMode"), idx);
+      tx_.setPttMode(m);
+    };
+    connect(pttGroup, &QActionGroup::triggered, this, [applyPttMode](QAction *) { applyPttMode(); });
+
+    connect(pttSettingsAction, &QAction::triggered, this, [this] {
+      QSettings settings;
+      QDialog dialog(this);
+      dialog.setWindowTitle(QStringLiteral("PTT / rigctld Settings"));
+      auto *form = new QFormLayout(&dialog);
+      auto *hostEdit = new QLineEdit(
+        settings.value(QStringLiteral("tx/rigctlHost"), QStringLiteral("127.0.0.1")).toString(), &dialog);
+      auto *portSpin = new QSpinBox(&dialog);
+      portSpin->setRange(1, 65535);
+      portSpin->setValue(settings.value(QStringLiteral("tx/rigctlPort"), 4532).toInt());
+      form->addRow(QStringLiteral("rigctld host"), hostEdit);
+      form->addRow(QStringLiteral("rigctld port"), portSpin);
+      auto *note = new QLabel(
+        QStringLiteral("rigctld is part of Hamlib. Start it with:\n  rigctld -m <model> -r <port> -t 4532"),
+        &dialog);
+      note->setWordWrap(true);
+      form->addRow(note);
+      auto *buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, &dialog);
+      form->addRow(buttons);
+      connect(buttons, &QDialogButtonBox::accepted, &dialog, [&] {
+        settings.setValue(QStringLiteral("tx/rigctlHost"), hostEdit->text());
+        settings.setValue(QStringLiteral("tx/rigctlPort"), portSpin->value());
+        tx_.setRigctlHost(hostEdit->text());
+        tx_.setRigctlPort(portSpin->value());
+        dialog.accept();
+      });
+      connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+      dialog.exec();
     });
-    // PTT via TCI is only relevant in soundcard TX mode
-    pttTciAction->setEnabled(useStandalone);
-    connect(txSoundcardAction, &QAction::toggled, pttTciAction, &QAction::setEnabled);
 
     setupPopup->addAction(QStringLiteral("Audio Devices…"), this,
                           [this] { openAudioSettingsDialog(); });
