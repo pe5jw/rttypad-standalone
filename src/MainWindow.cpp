@@ -373,7 +373,7 @@ double localTonePeak(const float *samples, size_t count, double sampleRate,
 }
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
-  setWindowTitle(QStringLiteral("rttyPad for deskHPSDR by DL1BZ — DIGL — Disconnected"));
+  setWindowTitle(QStringLiteral("rttyPad TCI by DL1BZ — DIGL — Disconnected"));
   resize(1380, 740);
   setMinimumSize(1380, 740);
   auto *setupMenu = menuBar()->addMenu(QStringLiteral("Setup"));
@@ -417,13 +417,13 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
   setupPopup->addAction(QStringLiteral("Macros…"), this, [this] { editMacro(0); });
   setupPopup->addAction(QStringLiteral("Station settings…"), this, [this] { editStationSettings(); });
   setupPopup->addSeparator();
-  auto *autoSetupAction = setupPopup->addAction(QStringLiteral("Auto Setup deskHPSDR"));
+  auto *autoSetupAction = setupPopup->addAction(QStringLiteral("Auto Setup TCI (DIGL/pitch)"));
   autoSetupAction->setCheckable(true);
-  autoSetupAction->setChecked(QSettings().value(QStringLiteral("tci/autoSetupDeskHPSDR"), true).toBool());
+  autoSetupAction->setChecked(QSettings().value(QStringLiteral("tci/autoSetup"), true).toBool());
   autoSetupAction->setToolTip(
           QStringLiteral("Save SDR mode and DIGI offsets, select DIGL for RTTY, restore on disconnect. Changes take effect on next connection."));
   connect(autoSetupAction, &QAction::toggled, this, [](bool enabled) {
-    QSettings().setValue(QStringLiteral("tci/autoSetupDeskHPSDR"), enabled);
+    QSettings().setValue(QStringLiteral("tci/autoSetup"), enabled);
   });
   auto *bandSetupAction = setupPopup->addAction(QStringLiteral("Auto Setup on Band Change"));
   bandSetupAction->setCheckable(true);
@@ -437,23 +437,55 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
   setupPopup->addSeparator();
 #ifdef HAVE_STANDALONE_TX
   {
-    auto *standaloneAction = setupPopup->addAction(QStringLiteral("Standalone TX (miniaudio)"));
-    standaloneAction->setCheckable(true);
-    const bool useStandalone = QSettings().value(QStringLiteral("tx/standalone"), true).toBool();
-    standaloneAction->setChecked(useStandalone);
-    standaloneAction->setToolTip(QStringLiteral(
-        "Generate FSK audio locally via miniaudio instead of sending text to deskHPSDR.\n"
-        "Reconnect for the change to take effect."));
-    tx_.setMode(useStandalone ? NativeRTTYTx::Mode::Standalone : NativeRTTYTx::Mode::TCI);
-    connect(standaloneAction, &QAction::toggled, this, [this](bool enabled) {
-      QSettings().setValue(QStringLiteral("tx/standalone"), enabled);
-      tx_.setMode(enabled ? NativeRTTYTx::Mode::Standalone : NativeRTTYTx::Mode::TCI);
+    // Audio RX source: soundcard (standalone) or TCI stream
+    auto *rxSoundcardAction = setupPopup->addAction(QStringLiteral("Audio RX: soundcard"));
+    rxSoundcardAction->setCheckable(true);
+    const bool useStandaloneRx = QSettings().value(QStringLiteral("rx/standalone"), true).toBool();
+    rxSoundcardAction->setChecked(useStandaloneRx);
+    rxSoundcardAction->setToolTip(QStringLiteral(
+        "Decode RTTY from soundcard mic input instead of TCI I/Q stream.\n"
+        "Uncheck to decode from TCI audio when connected."));
+    connect(rxSoundcardAction, &QAction::toggled, this, [this](bool enabled) {
+      QSettings().setValue(QStringLiteral("rx/standalone"), enabled);
       if (enabled) startStandaloneRx(); else stopStandaloneRx();
     });
+
+    // Audio TX source: soundcard (standalone) or TCI native rtty engine
+    auto *txSoundcardAction = setupPopup->addAction(QStringLiteral("Audio TX: soundcard (AFSK)"));
+    txSoundcardAction->setCheckable(true);
+    const bool useStandalone = QSettings().value(QStringLiteral("tx/standalone"), true).toBool();
+    txSoundcardAction->setChecked(useStandalone);
+    txSoundcardAction->setToolTip(QStringLiteral(
+        "Generate AFSK audio via soundcard instead of TCI native RTTY engine.\n"
+        "PTT via TCI trx command. Works with any TCI server."));
+    tx_.setMode(useStandalone ? NativeRTTYTx::Mode::Standalone : NativeRTTYTx::Mode::TCI);
+    connect(txSoundcardAction, &QAction::toggled, this, [this](bool enabled) {
+      QSettings().setValue(QStringLiteral("tx/standalone"), enabled);
+      tx_.setMode(enabled ? NativeRTTYTx::Mode::Standalone : NativeRTTYTx::Mode::TCI);
+    });
+
+    // PTT method for soundcard AFSK TX
+    auto *pttTciAction = setupPopup->addAction(QStringLiteral("PTT via TCI (trx:0,true/false)"));
+    pttTciAction->setCheckable(true);
+    const bool pttViaTci = QSettings().value(QStringLiteral("tx/pttViaTci"), true).toBool();
+    pttTciAction->setChecked(pttViaTci);
+    pttTciAction->setToolTip(QStringLiteral(
+        "Send trx:0,true to start TX and trx:0,false to end TX via TCI.\n"
+        "Active only in soundcard AFSK TX mode.\n"
+        "Serial port PTT will be added later."));
+    tx_.setPttMode(pttViaTci ? NativeRTTYTx::PttMode::TCI : NativeRTTYTx::PttMode::None);
+    connect(pttTciAction, &QAction::toggled, this, [this](bool enabled) {
+      QSettings().setValue(QStringLiteral("tx/pttViaTci"), enabled);
+      tx_.setPttMode(enabled ? NativeRTTYTx::PttMode::TCI : NativeRTTYTx::PttMode::None);
+    });
+    // PTT via TCI is only relevant in soundcard TX mode
+    pttTciAction->setEnabled(useStandalone);
+    connect(txSoundcardAction, &QAction::toggled, pttTciAction, &QAction::setEnabled);
+
     setupPopup->addAction(QStringLiteral("Audio Devices…"), this,
                           [this] { openAudioSettingsDialog(); });
-    // Start RX immediately if standalone mode is already on
-    if (useStandalone) {
+    // Start RX immediately if standalone RX is already on
+    if (useStandaloneRx) {
       QTimer::singleShot(0, this, [this] { startStandaloneRx(); });
     }
   }
@@ -546,7 +578,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     icon->setAlignment(Qt::AlignCenter);
     content->addWidget(icon);
 
-    auto *name = new QLabel(QStringLiteral("<b>rttyPad for deskHPSDR</b>"), &dialog);
+    auto *name = new QLabel(QStringLiteral("<b>rttyPad TCI</b>"), &dialog);
     name->setAlignment(Qt::AlignCenter);
     content->addWidget(name);
 
@@ -555,7 +587,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     content->addWidget(version);
 
     auto *description = new QLabel(
-            QStringLiteral("RTTY Terminal and Contest Logger for deskHPSDR"), &dialog);
+            QStringLiteral("RTTY Terminal and Contest Logger — TCI / Standalone"), &dialog);
     description->setAlignment(Qt::AlignCenter);
     description->setWordWrap(true);
     content->addWidget(description);
@@ -943,7 +975,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
   txButtons->addWidget(sendButton_);
   txButtons->addWidget(stopButton_);
   layout->addLayout(txButtons);
-  // Native FSK is generated inside deskHPSDR. AppKit's TX gain, BPF
+  // Native FSK is generated inside deskHPSDR (TCI native mode). AppKit's TX gain, BPF
   // and shaping controls belong to its separate AFSK audio path.
   connect(txFill_, &QComboBox::currentTextChanged, this, [this](const QString &) { sendNativeTxParameters(); });
   connect(txStopBits_, &QComboBox::currentTextChanged, this, [this](const QString &) { sendNativeTxParameters(); });
@@ -1328,7 +1360,7 @@ void MainWindow::updateConnectionUi(bool connected) {
   connectButton_->setText(connected ? QStringLiteral("Disconnect") : QStringLiteral("Connect"));
   connectionLabel_->setText(connected ? (nativeRttyConfirmed_ ? QStringLiteral("Connected") :
                                          QStringLiteral("Checking native RTTY…")) : QStringLiteral("Disconnected"));
-  setWindowTitle(QStringLiteral("rttyPad for deskHPSDR by DL1BZ — %1 offset %2 Hz — %3")
+  setWindowTitle(QStringLiteral("rttyPad TCI by DL1BZ — %1 offset %2 Hz — %3")
                  .arg(tciMode_)
                  .arg(center_->value(), 0, 'f', 0)
                  .arg(connected ? QStringLiteral("Connected (Native RTTY)")
@@ -2163,7 +2195,7 @@ void MainWindow::updateRxStatus() {
                         : QStringLiteral("— dBm");
   rxStatus_->setText(QStringLiteral("MODE %1  |  QRG %2  |  %3")
                      .arg(tciMode_, qrg, level));
-  setWindowTitle(QStringLiteral("rttyPad for deskHPSDR by DL1BZ — %1 offset %2 Hz — %3")
+  setWindowTitle(QStringLiteral("rttyPad TCI by DL1BZ — %1 offset %2 Hz — %3")
                  .arg(tciMode_)
                  .arg(center_->value(), 0, 'f', 0)
                  .arg(tci_.isConnected() ? QStringLiteral("Connected (Native RTTY)")
@@ -2268,9 +2300,9 @@ void MainWindow::failNativeRttyCheck() {
   // No SDR settings have been modified while capability was pending.
   tci_.disconnectFromHost();
   QMessageBox::critical(this, QStringLiteral("Native RTTY Not Supported"),
-                        QStringLiteral("rttyPad requires deskHPSDR with native RTTY support.\n\n"
-                                       "The connected TCI server did not confirm the required native RTTY interface.\n\n"
-                                       "Please connect to a compatible version of deskHPSDR."));
+                        QStringLiteral("The connected TCI server does not support native RTTY.\n\n"
+                                       "Enable 'Audio TX: soundcard (AFSK)' in Setup to use local audio output instead.\n\n"
+                                       "Native RTTY is supported by deskHPSDR."));
 }
 
 void MainWindow::beginRttySession() {
@@ -2286,7 +2318,7 @@ void MainWindow::beginRttySession() {
   autoSetupBandChangeSession_ = QSettings().value(QStringLiteral("tci/autoSetupBandChange"), true).toBool();
   // Freeze the preference for this connection; toggling Setup mid-session
   // must not discard a pending restoration or start an incomplete snapshot.
-  autoSetupSession_ = QSettings().value(QStringLiteral("tci/autoSetupDeskHPSDR"), true).toBool();
+  autoSetupSession_ = QSettings().value(QStringLiteral("tci/autoSetup"), true).toBool();
   if (!autoSetupSession_) { return; }
   // Do not change the SDR until all three original values have been received.
   tci_.sendText(QStringLiteral("modulation:0;"));

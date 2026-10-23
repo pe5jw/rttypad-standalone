@@ -9,7 +9,7 @@ class TCIClient;
 class StandaloneRTTYTx;
 #endif
 
-// Native FSK control — TCI mode (deskHPSDR) or Standalone mode (miniaudio).
+// Native FSK control — TCI mode (deskHPSDR) or Standalone mode (miniaudio AFSK + TCI PTT).
 class NativeRTTYTx final : public QObject {
   Q_OBJECT
 public:
@@ -17,6 +17,9 @@ public:
 
   /* TX backend selection */
   enum class Mode { TCI, Standalone };
+
+  /* PTT method for standalone AFSK mode */
+  enum class PttMode { TCI, None };  // Serial port added later
 
   explicit NativeRTTYTx(TCIClient *client, QObject *parent = nullptr);
   ~NativeRTTYTx() override;
@@ -29,6 +32,9 @@ public:
   State state() const { return state_; }
   bool  bufferEmpty() const { return bufferEmpty_; }
   void  setNativeRttyConfirmed(bool confirmed) { nativeRttyConfirmed_ = confirmed; }
+
+  /* ---- PTT (standalone mode only) ------------------------------ */
+  void setPttMode(PttMode mode) { pttMode_ = mode; }
 
   /* ---- Unified control ----------------------------------------- */
   bool send(const QString &text);
@@ -50,10 +56,11 @@ private:
   static QString escapePayload(const QString &text);
 
   TCIClient *client_;
-  Mode  mode_                 = Mode::TCI;
-  State state_                = State::Disconnected;
-  bool  bufferEmpty_          = true;
-  bool  nativeRttyConfirmed_  = false;
+  Mode    mode_                = Mode::TCI;
+  PttMode pttMode_             = PttMode::TCI;
+  State   state_               = State::Disconnected;
+  bool    bufferEmpty_         = true;
+  bool    nativeRttyConfirmed_ = false;
 
 #ifdef HAVE_STANDALONE_TX
   StandaloneRTTYTx *standalone_ = nullptr;
