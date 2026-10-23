@@ -2,7 +2,7 @@
 # its a test to extend rttypad with tx.
 
 Trying to port the rtty-enigene from deskhpsr to add to rttypad so its works on tci.
-It seams to use portaudo so its als swtched to mniaudio.
+It seams to use portaudo so its swtched to miniaudio.
 
 Planning :) BoltTCIAddon, digimodes and rtty/cw with a winkey emulator to sent the code from a logger like n1mm+.
 Just playing around the code wont be stabele so don't use it !!! :)
