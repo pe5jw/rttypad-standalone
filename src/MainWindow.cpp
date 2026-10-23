@@ -2313,24 +2313,23 @@ void MainWindow::failNativeRttyCheck() {
   if (!nativeRttyCheckPending_) { return; }
   nativeRttyCheckPending_ = false;
   ++nativeRttyCheckGeneration_;
-  // In standalone TX mode the TCI server is not required to advertise
-  // native RTTY support — audio is generated locally by miniaudio.
-#ifdef HAVE_STANDALONE_TX
-  if (tx_.mode() == NativeRTTYTx::Mode::Standalone) {
-    nativeRttyConfirmed_ = false;   // keep false; standalone ignores it
-    tx_.setNativeRttyConfirmed(false);
-    updateTxUi();
-    return;                          // do NOT disconnect or show the dialog
-  }
-#endif
   nativeRttyConfirmed_ = false;
   tx_.setNativeRttyConfirmed(false);
   updateTxUi();
-  // No SDR settings have been modified while capability was pending.
+
+  // If audio mode is soundcard (or standalone TX), native RTTY support is
+  // not required — audio is generated locally. Silently continue.
+#ifdef HAVE_STANDALONE_TX
+  if (tx_.mode() == NativeRTTYTx::Mode::Standalone) {
+    return;
+  }
+#endif
+  // Only show the error when the user explicitly chose TCI native RTTY
+  // and the connected server does not support it.
   tci_.disconnectFromHost();
-  QMessageBox::critical(this, QStringLiteral("Native RTTY Not Supported"),
+  QMessageBox::critical(this, QStringLiteral("TCI Native RTTY Not Supported"),
                         QStringLiteral("The connected TCI server does not support native RTTY.\n\n"
-                                       "Enable 'Audio TX: soundcard (AFSK)' in Setup to use local audio output instead.\n\n"
+                                       "Switch to 'Audio: soundcard' in Setup to use local audio instead.\n\n"
                                        "Native RTTY is supported by deskHPSDR."));
 }
 
