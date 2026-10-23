@@ -468,7 +468,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     // PTT method sub-menu for soundcard AFSK TX
     auto *pttMenu = setupPopup->addMenu(QStringLiteral("PTT method"));
     pttMenu->setEnabled(useStandalone);
-    connect(txSoundcardAction, &QAction::toggled, pttMenu, &QAction::setEnabled);
+    connect(txSoundcardAction, &QAction::toggled, this, [pttMenu](bool on) { pttMenu->setEnabled(on); });
 
     auto *pttGroup = new QActionGroup(pttMenu);
     pttGroup->setExclusive(true);
