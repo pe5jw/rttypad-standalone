@@ -1,3 +1,14 @@
+# This is afork from Rttypad bj DL1BZ, its a test to extend rttypad with tx.
+
+Trying to port the rtty-enigene from deskhpsr to add to rttypad so its works on tci.
+It seams to use portaudo so its als swtched to mniaudio.
+
+Planning :) BoltTCIAddon, digimodes and rtty/cw with a winkey emulator to sent the code from a logger like n1mm+.
+Just playing around the code wont be stabele so don't use it !!! :)
+If you do feedback would be nice.
+
+Please dont bother DL1BZ with problems in this code its not made by him !!!
+
 # rttyPad for deskHPSDR by DL1BZ
 
 rttyPad for deskHPSDR is an extension app for RTTY in combination with my deskHPSDR SDR app. rttyPad is simply the Open Source version and Qt6 porting of my rttyTCI, which is published as Freeware exclusive for macOS native only (but not Open Source). rttyPad can run with macOS, Linux and WINDOWS unlike rttyTCI, which work only with macOS as native Mac app.
