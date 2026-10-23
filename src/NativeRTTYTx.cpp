@@ -19,7 +19,6 @@ NativeRTTYTx::NativeRTTYTx(TCIClient *client, QObject *parent)
           this, &NativeRTTYTx::drainBufferEmpty);
   connect(standalone_, &StandaloneRTTYTx::stateChanged,
           this, [this](StandaloneRTTYTx::State s) {
-    if (mode_ != Mode::Standalone) return;
     switch (s) {
     case StandaloneRTTYTx::State::Idle:
       dropPtt();   // audio finished draining — release PTT
@@ -46,37 +45,8 @@ NativeRTTYTx::NativeRTTYTx(TCIClient *client, QObject *parent)
     nativeRttyConfirmed_ = false;
     setState(State::Disconnected);
   });
-  connect(client_, &TCIClient::textMessageReceived, this, [this](const QString & message) {
-    const QStringList commands = message.split(QLatin1Char(';'), Qt::SkipEmptyParts);
-    for (const QString &command : commands) {
-      const QString normalized = command.trimmed();
-      if (normalized.compare(QStringLiteral("trx:0,false"), Qt::CaseInsensitive) == 0 ||
-          normalized.compare(QStringLiteral("trx:0,0"), Qt::CaseInsensitive) == 0) {
-        // TRX=false is the authoritative RX confirmation, regardless
-        // of whether TX ended through drain, stop, or remote control.
-        // A queue-empty notification alone must never end TX.
-        if (state_ == State::Sending || state_ == State::Draining) {
-          bufferEmpty_ = true;
-          setState(State::Idle);
-        }
-      }
-      if (normalized.compare(QStringLiteral("rtty_buffer_empty"), Qt::CaseInsensitive) != 0) {
-        continue;
-      }
-      if (state_ == State::Disconnected) {
-        continue;  // Ignore stale server messages after disconnect.
-      }
-      bufferEmpty_ = true;
-      // Queue-empty is not an RX confirmation. Remain in Sending
-      // until the operator requests drain/stop or the server reports RX.
-      // Buffer empty confirms that the server has consumed the queued text.
-      // It does not by itself confirm that RF transmission has stopped.
-      if (state_ == State::Draining) {
-        emit drainBufferEmpty();
-      }
-      emit bufferEmptyReceived();
-    }
-  });
+  // TX state is driven by the standalone audio engine (stateChanged signal).
+  // No TCI text commands are needed for TX control.
 }
 
 NativeRTTYTx::~NativeRTTYTx() = default;
@@ -154,85 +124,38 @@ QString NativeRTTYTx::escapePayload(const QString &text) {
 
 bool NativeRTTYTx::send(const QString &text) {
 #ifdef HAVE_STANDALONE_TX
-  if (mode_ == Mode::Standalone) {
-    if (state_ == State::Idle)
-      raisePtt();   // PTT ON before first character of a new transmission
-    return standalone_->send(text);
-  }
+  // Audio is always generated locally by miniaudio (AFSK via soundcard).
+  // PTT is raised here on first character, regardless of TCI connection.
+  if (state_ == State::Idle)
+    raisePtt();
+  return standalone_->send(text);
+#else
+  return false;
 #endif
-  if (!client_->isConnected() || !nativeRttyConfirmed_ || state_ == State::Draining) {
-    return false;
-  }
-  const QString payload = escapePayload(text);
-  if (payload.isEmpty()) {
-    return false;
-  }
-  // The Send button has no separate TX-start action. Explicitly start
-  // the server engine before queuing text when currently idle.
-  if (state_ == State::Idle && !start()) {
-    return false;
-  }
-  bufferEmpty_ = false;
-  client_->sendText(QStringLiteral("rtty_text:[%1];").arg(payload));
-  setState(State::Sending);
-  return true;
 }
 
 bool NativeRTTYTx::start() {
 #ifdef HAVE_STANDALONE_TX
-  if (mode_ == Mode::Standalone)
-    return standalone_->start();
+  return standalone_->start();
+#else
+  return false;
 #endif
-  if (!client_->isConnected() || !nativeRttyConfirmed_) {
-    return false;
-  }
-  if (state_ == State::Draining) {
-    return false;
-  }
-  // An explicit start must not reset an active send to Idle or mark
-  // its still-pending queue as empty.
-  if (state_ == State::Sending) {
-    return true;
-  }
-  client_->sendText(QStringLiteral("rtty_start;"));
-  bufferEmpty_ = true;
-  setState(State::Idle);
-  return true;
 }
 
 bool NativeRTTYTx::drain() {
 #ifdef HAVE_STANDALONE_TX
-  if (mode_ == Mode::Standalone)
-    return standalone_->drain();
+  return standalone_->drain();
+#else
+  return false;
 #endif
-  // Draining an idle engine can leave the UI waiting for a buffer-empty
-  // notification that the server has no reason to send.
-  if (!client_->isConnected() || state_ != State::Sending) {
-    return false;
-  }
-  client_->sendText(QStringLiteral("rtty_drain;"));
-  setState(State::Draining);
-  return true;
 }
 
 bool NativeRTTYTx::stop() {
 #ifdef HAVE_STANDALONE_TX
-  if (mode_ == Mode::Standalone) {
-    bool ok = standalone_->stop();
-    if (ok) dropPtt();   // immediate stop — no drain, drop PTT now
-    return ok;
-  }
+  bool ok = standalone_->stop();
+  if (ok) dropPtt();
+  return ok;
+#else
+  return false;
 #endif
-  if (!client_->isConnected()) {
-    return false;
-  }
-  if (state_ == State::Idle) {
-    return true;
-  }
-  // Stop is asynchronous: only trx:0,false confirms RX. Keeping the
-  // engine in Draining prevents a second text queue from racing the stop.
-  client_->sendText(QStringLiteral("rtty_stop;"));
-  bufferEmpty_ = false;
-  setState(State::Draining);
-  return true;
 }
