@@ -110,9 +110,15 @@ void TCIClient::sendBinaryData(const QByteArray &data) {
 
 void TCIClient::sendInitialTCICommands() {
   const quint64 generation = connectionGeneration_;
-  // Native RTTY is disabled by default on the deskHPSDR TCI server.
-  // Enable it before accepting operator TX commands.
-  sendText(QStringLiteral("rtty_enable:1;"));
+
+  // deskHPSDR only: native RTTY engine must be enabled explicitly.
+  // Other TCI servers (SDRoxide, Bolt, Thetis, …) do not understand this
+  // command and may reject the session if it is sent.
+  if (dialect_ == Dialect::DeskHPSDR) {
+    sendText(QStringLiteral("rtty_enable:1;"));
+  }
+
+  // Standard TCI: request RX audio and IQ streams.
   const QStringList commands = {
     QStringLiteral("audio_stream_sample_type:float32;"),
     QStringLiteral("audio_stream_channels:1;"),

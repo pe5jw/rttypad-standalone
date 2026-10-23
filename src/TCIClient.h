@@ -32,12 +32,21 @@ Q_DECLARE_METATYPE(TCIStreamInfo)
 class TCIClient final : public QObject {
   Q_OBJECT
 public:
+  // TCI dialect — controls which non-standard commands are sent on connect.
+  // "deskhpsdr" : sends rtty_enable:1 and rtty_* parameters (deskHPSDR extension)
+  // anything else: plain TCI only (iq_start, audio_start, no rtty_ commands)
+  enum class Dialect { Generic, DeskHPSDR };
+
   explicit TCIClient(QObject *parent = nullptr);
   bool isConnected() const;
   void connectToHost(const QString &host, quint16 port);
   void disconnectFromHost();
   void sendText(const QString &text);
   void sendBinaryData(const QByteArray &data);
+
+  void setDialect(Dialect d) { dialect_ = d; }
+  Dialect dialect() const { return dialect_; }
+  bool isDeskHPSDR() const { return dialect_ == Dialect::DeskHPSDR; }
 
 signals:
   void logLine(const QString &line);
@@ -54,4 +63,5 @@ private:
   QWebSocket socket_;
   bool intentionallyClosed_ = false;
   quint64 connectionGeneration_ = 0;
+  Dialect dialect_ = Dialect::Generic;
 };

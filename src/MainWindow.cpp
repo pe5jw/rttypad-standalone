@@ -418,35 +418,13 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
   setupPopup->addAction(QStringLiteral("Macros…"), this, [this] { editMacro(0); });
   setupPopup->addAction(QStringLiteral("Station settings…"), this, [this] { editStationSettings(); });
   setupPopup->addSeparator();
-  // ---- Audio mode: TCI or soundcard (one exclusive choice) -------
+  // ---- Audio: always soundcard (miniaudio AFSK). No TCI binary TX audio. ---
 #ifdef HAVE_STANDALONE_TX
   {
-    auto *audioGroup = new QActionGroup(setupPopup);
-    audioGroup->setExclusive(true);
-
-    auto *audioTciAct   = setupPopup->addAction(QStringLiteral("Audio: TCI"));
-    auto *audioSndAct   = setupPopup->addAction(QStringLiteral("Audio: soundcard"));
-    audioTciAct->setCheckable(true);
-    audioSndAct->setCheckable(true);
-    audioGroup->addAction(audioTciAct);
-    audioGroup->addAction(audioSndAct);
-
-    // 0 = TCI audio, 1 = soundcard
-    const bool useSoundcard = QSettings().value(QStringLiteral("audio/mode"), 0).toInt() == 1;
-    audioTciAct->setChecked(!useSoundcard);
-    audioSndAct->setChecked(useSoundcard);
-
-    auto applyAudioMode = [this](bool soundcard) {
-      QSettings().setValue(QStringLiteral("audio/mode"), soundcard ? 1 : 0);
-      tx_.setMode(soundcard ? NativeRTTYTx::Mode::Standalone : NativeRTTYTx::Mode::TCI);
-      if (soundcard) startStandaloneRx(); else stopStandaloneRx();
-    };
-    tx_.setMode(useSoundcard ? NativeRTTYTx::Mode::Standalone : NativeRTTYTx::Mode::TCI);
-    if (useSoundcard) QTimer::singleShot(0, this, [this] { startStandaloneRx(); });
-
-    connect(audioGroup, &QActionGroup::triggered, this, [applyAudioMode, audioSndAct](QAction *) {
-      applyAudioMode(audioSndAct->isChecked());
-    });
+    // TX audio always goes via soundcard (miniaudio AFSK engine).
+    // Set to Standalone unconditionally; Mode::TCI was for deskHPSDR native
+    // RTTY engine which has been removed.
+    tx_.setMode(NativeRTTYTx::Mode::Standalone);
 
     setupPopup->addSeparator();
 
@@ -1466,8 +1444,11 @@ void MainWindow::updateAfc(const float *samples, size_t count, double sampleRate
 
 void MainWindow::updateTxUi() {
   const auto state = tx_.state();
-  const bool txReady = nativeRttyConfirmed_ || tx_.mode() == NativeRTTYTx::Mode::Standalone;
-  const bool connected = tci_.isConnected() && txReady && state != NativeRTTYTx::State::Disconnected;
+  // TX is always via standalone engine now; no TCI binary audio TX.
+  // When TCI is disabled entirely, allow TX without TCI connection.
+  const bool txReady = true;  // Mode::Standalone always; nativeRttyConfirmed_ no longer needed
+  const bool tciOk = tciDisabled_ || tci_.isConnected();
+  const bool connected = tciOk && txReady && state != NativeRTTYTx::State::Disconnected;
   const bool draining = state == NativeRTTYTx::State::Draining;
   sendButton_->setEnabled(connected && !draining);
   drainButton_->setEnabled(connected && state == NativeRTTYTx::State::Sending);
@@ -2043,8 +2024,8 @@ void MainWindow::editStationSettings() {
 }
 
 void MainWindow::runMacro(int index) {
-  const bool macroReady = nativeRttyConfirmed_ || tx_.mode() == NativeRTTYTx::Mode::Standalone;
-  if (!tci_.isConnected() || !macroReady || tx_.state() == NativeRTTYTx::State::Draining) { return; }
+  const bool tciOk = tciDisabled_ || tci_.isConnected();
+  if (!tciOk || tx_.state() == NativeRTTYTx::State::Draining) { return; }
   QSettings settings;
   const bool contest = contestMode_->isChecked();
   const bool cqww = contestType_->currentText() == QStringLiteral("CQ-WW-RTTY");
@@ -2522,13 +2503,16 @@ void MainWindow::sendNativeTxParameters() {
   if (!tci_.isConnected()) {
     return;
   }
-  tci_.sendText(QStringLiteral("rtty_baud:%1;").arg(baud_->value(), 0, 'f', 4));
-  tci_.sendText(QStringLiteral("rtty_shift:%1;").arg(shift_->value(), 0, 'f', 1));
-  tci_.sendText(QStringLiteral("rtty_fill:%1;").arg(txFill_->currentText()));
-  tci_.sendText(QStringLiteral("rtty_stop_bits:%1;").arg(txStopBits_->currentText()));
-  tci_.sendText(QStringLiteral("rtty_uos:%1;").arg(txUos_->isChecked() ? 1 : 0));
-  tci_.sendText(QStringLiteral("rtty_start_crlf:%1;").arg(txStartCrlf_->isChecked() ? 1 : 0));
-  tci_.sendText(QStringLiteral("rtty_idle_timeout:%1;").arg(idleTimeout_->value()));
+  // rtty_* commands are deskHPSDR extensions — do not send them to other servers.
+  if (tci_.isDeskHPSDR()) {
+    tci_.sendText(QStringLiteral("rtty_baud:%1;").arg(baud_->value(), 0, 'f', 4));
+    tci_.sendText(QStringLiteral("rtty_shift:%1;").arg(shift_->value(), 0, 'f', 1));
+    tci_.sendText(QStringLiteral("rtty_fill:%1;").arg(txFill_->currentText()));
+    tci_.sendText(QStringLiteral("rtty_stop_bits:%1;").arg(txStopBits_->currentText()));
+    tci_.sendText(QStringLiteral("rtty_uos:%1;").arg(txUos_->isChecked() ? 1 : 0));
+    tci_.sendText(QStringLiteral("rtty_start_crlf:%1;").arg(txStartCrlf_->isChecked() ? 1 : 0));
+    tci_.sendText(QStringLiteral("rtty_idle_timeout:%1;").arg(idleTimeout_->value()));
+  }
 }
 
 bool MainWindow::eventFilter(QObject *watched, QEvent *event) {
@@ -3370,20 +3354,31 @@ void MainWindow::openTciSettingsDialog()
 
   form->addRow(new QLabel(QStringLiteral(""), &dialog)); // spacer
 
-  // Dialect
+  // Dialect — describes what non-standard commands are sent, not which app
   auto *dialectCombo = new QComboBox(&dialog);
-  dialectCombo->addItem(QStringLiteral("deskHPSDR"),  QStringLiteral("deskhpsdr"));
-  dialectCombo->addItem(QStringLiteral("Thetis"),     QStringLiteral("thetis"));
-  dialectCombo->addItem(QStringLiteral("Generic TCI"),QStringLiteral("generic"));
+  // "deskhpsdr": sends rtty_enable:1 + rtty_* parameters on connect (deskHPSDR extension)
+  dialectCombo->addItem(
+    QStringLiteral("deskHPSDR (rtty_enable + rtty_* commands)"),
+    QStringLiteral("deskhpsdr"));
+  // "ptt_with_tci_suffix": plain TCI + trx:0,true,tci; for PTT
+  //   SDRoxide and Bolt SDR use this variant
+  dialectCombo->addItem(
+    QStringLiteral("trx:0,true,tci;  (SDRoxide / Bolt SDR)"),
+    QStringLiteral("ptt_with_tci_suffix"));
+  // "generic": plain TCI, trx:0,true; for PTT, no rtty_* commands
+  //   Works with Thetis and most standard TCI servers
+  dialectCombo->addItem(
+    QStringLiteral("trx:0,true;  (Thetis / Generic TCI)"),
+    QStringLiteral("generic"));
   const QString savedDialect = settings.value(QStringLiteral("tci/dialect"),
-                                              QStringLiteral("deskhpsdr")).toString();
+                                              QStringLiteral("generic")).toString();
   for (int i = 0; i < dialectCombo->count(); ++i) {
     if (dialectCombo->itemData(i).toString() == savedDialect) {
       dialectCombo->setCurrentIndex(i);
       break;
     }
   }
-  form->addRow(QStringLiteral("TCI dialect"), dialectCombo);
+  form->addRow(QStringLiteral("TCI variant"), dialectCombo);
 
   // Sample rate
   auto *srCombo = new QComboBox(&dialog);
@@ -3418,15 +3413,25 @@ void MainWindow::openTciSettingsDialog()
 // ---- Apply TCI dialect — sets PTT suffix and other dialect quirks ----------
 void MainWindow::applyTciDialect(const QString &dialect)
 {
-  // SDRoxide and Bolt require ",tci" suffix on trx:0,true/false so the
-  // server routes the TCI audio stream to the TX path.
-  // deskHPSDR and Thetis accept plain trx:0,true without suffix.
+  // Map saved dialect key → TCIClient::Dialect (controls which init commands are sent)
+  TCIClient::Dialect tciDialect = TCIClient::Dialect::Generic;
+  if (dialect == QStringLiteral("deskhpsdr")) {
+    tciDialect = TCIClient::Dialect::DeskHPSDR;
+  }
+  tci_.setDialect(tciDialect);
+
+  // PTT suffix: some servers require ",tci" on trx:0,true/false to route
+  // the TCI audio stream to the TX path (SDRoxide uses this internally).
+  // deskHPSDR and Thetis accept plain trx:0,true/false without suffix.
   QString suffix;
-  if (dialect == QStringLiteral("sdroxide") || dialect == QStringLiteral("bolt")) {
+  if (dialect == QStringLiteral("ptt_with_tci_suffix")) {
     suffix = QStringLiteral(",tci");
   }
   tx_.setTciPttSuffix(suffix);
-  qDebug() << "TCI dialect:" << dialect << "PTT suffix:" << (suffix.isEmpty() ? "(none)" : suffix);
+
+  qDebug() << "TCI dialect:" << dialect
+           << "deskHPSDR extensions:" << (tciDialect == TCIClient::Dialect::DeskHPSDR)
+           << "PTT suffix:" << (suffix.isEmpty() ? "(none)" : suffix);
 }
 
 // ---- TCI off — hide/show TCI elements ------------------------------------
@@ -3450,11 +3455,9 @@ void MainWindow::applyTciOffMode(bool disabled)
     startStandaloneRx();
 #endif
   } else {
-    // Restore TCI audio mode if previously set
+    // TX audio is always soundcard (standalone engine); no change needed here.
 #ifdef HAVE_STANDALONE_TX
-    const bool useSoundcard = QSettings().value(QStringLiteral("audio/mode"), 0).toInt() == 1;
-    tx_.setMode(useSoundcard ? NativeRTTYTx::Mode::Standalone : NativeRTTYTx::Mode::TCI);
-    if (!useSoundcard) stopStandaloneRx();
+    stopStandaloneRx();   // RX soundcard was started in TCI-off mode; stop it now
 #endif
   }
 }
