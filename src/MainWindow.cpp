@@ -467,26 +467,22 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     auto *pttRtsAct     = makePttAct(QStringLiteral("RTS  (COM poort)"));
     auto *pttRigctlAct  = makePttAct(QStringLiteral("rigctld  (Hamlib TCP)"));
     auto *pttTciAct     = makePttAct(QStringLiteral("TCI  (trx:0,true/false)"));
-    auto *pttTciDtrAct  = makePttAct(QStringLiteral("TCI + DTR"));
-    auto *pttTciRtsAct  = makePttAct(QStringLiteral("TCI + RTS"));
     pttMenu->addSeparator();
     auto *pttCfgAct     = pttMenu->addAction(QStringLiteral("PTT instellingen…"));
 
     // PttMode opgeslagen als int, mapping:
-    // 0=None 1=DTR 2=RTS 3=Rigctld 4=TCI 5=TciAndDTR 6=TciAndRTS
+    // 0=None 1=DTR 2=RTS 3=Rigctld 4=TCI
     using PM = NativeRTTYTx::PttMode;
     const int savedPtt = QSettings().value(QStringLiteral("tx/pttMode"), 4).toInt();
     PM initPtt = PM::TCI;
     auto setPttCheck = [&](int idx, PM mode, QAction *act) {
       if (savedPtt == idx) { act->setChecked(true); initPtt = mode; }
     };
-    setPttCheck(0, PM::None,        pttNoneAct);
-    setPttCheck(1, PM::SerialDTR,   pttDtrAct);
-    setPttCheck(2, PM::SerialRTS,   pttRtsAct);
-    setPttCheck(3, PM::Rigctld,     pttRigctlAct);
-    setPttCheck(4, PM::TCI,         pttTciAct);
-    setPttCheck(5, PM::TciAndDTR,   pttTciDtrAct);
-    setPttCheck(6, PM::TciAndRTS,   pttTciRtsAct);
+    setPttCheck(0, PM::None,      pttNoneAct);
+    setPttCheck(1, PM::SerialDTR, pttDtrAct);
+    setPttCheck(2, PM::SerialRTS, pttRtsAct);
+    setPttCheck(3, PM::Rigctld,   pttRigctlAct);
+    setPttCheck(4, PM::TCI,       pttTciAct);
     if (!pttGroup->checkedAction()) pttTciAct->setChecked(true);
 
     tx_.setPttMode(initPtt);
@@ -497,17 +493,14 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
                                             QString()).toString());
 
     connect(pttGroup, &QActionGroup::triggered, this,
-            [this, pttNoneAct, pttDtrAct, pttRtsAct, pttRigctlAct,
-             pttTciAct, pttTciDtrAct, pttTciRtsAct](QAction *) {
+            [this, pttNoneAct, pttDtrAct, pttRtsAct, pttRigctlAct, pttTciAct](QAction *) {
       using PM = NativeRTTYTx::PttMode;
       PM m = PM::TCI; int idx = 4;
-      if (pttNoneAct->isChecked())   { m = PM::None;        idx = 0; }
-      if (pttDtrAct->isChecked())    { m = PM::SerialDTR;   idx = 1; }
-      if (pttRtsAct->isChecked())    { m = PM::SerialRTS;   idx = 2; }
-      if (pttRigctlAct->isChecked()) { m = PM::Rigctld;     idx = 3; }
-      if (pttTciAct->isChecked())    { m = PM::TCI;         idx = 4; }
-      if (pttTciDtrAct->isChecked()) { m = PM::TciAndDTR;   idx = 5; }
-      if (pttTciRtsAct->isChecked()) { m = PM::TciAndRTS;   idx = 6; }
+      if (pttNoneAct->isChecked())   { m = PM::None;      idx = 0; }
+      if (pttDtrAct->isChecked())    { m = PM::SerialDTR; idx = 1; }
+      if (pttRtsAct->isChecked())    { m = PM::SerialRTS; idx = 2; }
+      if (pttRigctlAct->isChecked()) { m = PM::Rigctld;   idx = 3; }
+      if (pttTciAct->isChecked())    { m = PM::TCI;       idx = 4; }
       QSettings().setValue(QStringLiteral("tx/pttMode"), idx);
       tx_.setPttMode(m);
     });
@@ -518,10 +511,10 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
   }
   setupPopup->addSeparator();
 
-  // Apply saved connection mode on startup
+  // Apply saved connection mode on startup (always call so engine state is initialised)
   {
     const bool audioMode = QSettings().value(QStringLiteral("conn/mode"), 0).toInt() == 1;
-    if (audioMode) QTimer::singleShot(0, this, [this] { applyConnectionMode(false); });
+    QTimer::singleShot(0, this, [this, audioMode] { applyConnectionMode(!audioMode); });
   }
 
   // Apply saved TCI dialect (sets PTT suffix etc.)

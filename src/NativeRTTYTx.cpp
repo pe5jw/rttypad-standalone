@@ -66,59 +66,57 @@ void NativeRTTYTx::setSerialPttPort(const QString &portName)
 
 void NativeRTTYTx::raisePtt()
 {
-  using PM = PttMode;
-  const bool useTci    = (pttMode_ == PM::TCI || pttMode_ == PM::TciAndDTR ||
-                          pttMode_ == PM::TciAndRTS || pttMode_ == PM::TciAndRigctl);
-  const bool useDTR    = (pttMode_ == PM::SerialDTR || pttMode_ == PM::TciAndDTR);
-  const bool useRTS    = (pttMode_ == PM::SerialRTS || pttMode_ == PM::TciAndRTS);
-  const bool useRigctl = (pttMode_ == PM::Rigctld    || pttMode_ == PM::TciAndRigctl);
-
-  if (useTci && client_->isConnected()) {
-    client_->sendText(QStringLiteral("trx:0,true%1;").arg(tciPttSuffix_));
-    qDebug() << "NativeRTTYTx: PTT ON via TCI";
-  }
-  if (useDTR) {
+  switch (pttMode_) {
+  case PttMode::TCI:
+    if (client_->isConnected()) {
+      client_->sendText(QStringLiteral("trx:0,true%1;").arg(tciPttSuffix_));
+      qDebug() << "NativeRTTYTx: PTT ON via TCI";
+    }
+    break;
+  case PttMode::SerialDTR:
     serialPtt_->setLine(SerialPtt::Line::DTR);
     serialPtt_->setPtt(true);
     qDebug() << "NativeRTTYTx: PTT ON via DTR";
-  }
-  if (useRTS) {
+    break;
+  case PttMode::SerialRTS:
     serialPtt_->setLine(SerialPtt::Line::RTS);
     serialPtt_->setPtt(true);
     qDebug() << "NativeRTTYTx: PTT ON via RTS";
-  }
-  if (useRigctl) {
+    break;
+  case PttMode::Rigctld:
     rigctl_->setPtt(true);
     qDebug() << "NativeRTTYTx: PTT ON via rigctld";
+    break;
+  case PttMode::None:
+    break;
   }
 }
 
 void NativeRTTYTx::dropPtt()
 {
-  using PM = PttMode;
-  const bool useTci    = (pttMode_ == PM::TCI || pttMode_ == PM::TciAndDTR ||
-                          pttMode_ == PM::TciAndRTS || pttMode_ == PM::TciAndRigctl);
-  const bool useDTR    = (pttMode_ == PM::SerialDTR || pttMode_ == PM::TciAndDTR);
-  const bool useRTS    = (pttMode_ == PM::SerialRTS || pttMode_ == PM::TciAndRTS);
-  const bool useRigctl = (pttMode_ == PM::Rigctld    || pttMode_ == PM::TciAndRigctl);
-
-  if (useTci && client_->isConnected()) {
-    client_->sendText(QStringLiteral("trx:0,false%1;").arg(tciPttSuffix_));
-    qDebug() << "NativeRTTYTx: PTT OFF via TCI";
-  }
-  if (useDTR) {
+  switch (pttMode_) {
+  case PttMode::TCI:
+    if (client_->isConnected()) {
+      client_->sendText(QStringLiteral("trx:0,false%1;").arg(tciPttSuffix_));
+      qDebug() << "NativeRTTYTx: PTT OFF via TCI";
+    }
+    break;
+  case PttMode::SerialDTR:
     serialPtt_->setLine(SerialPtt::Line::DTR);
     serialPtt_->setPtt(false);
     qDebug() << "NativeRTTYTx: PTT OFF via DTR";
-  }
-  if (useRTS) {
+    break;
+  case PttMode::SerialRTS:
     serialPtt_->setLine(SerialPtt::Line::RTS);
     serialPtt_->setPtt(false);
     qDebug() << "NativeRTTYTx: PTT OFF via RTS";
-  }
-  if (useRigctl) {
+    break;
+  case PttMode::Rigctld:
     rigctl_->setPtt(false);
     qDebug() << "NativeRTTYTx: PTT OFF via rigctld";
+    break;
+  case PttMode::None:
+    break;
   }
 }
 

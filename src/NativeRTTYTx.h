@@ -15,24 +15,18 @@ public:
   enum class State { Disconnected, Idle, Sending, Draining };
 
   /* PTT method:
-   *   None         — no PTT (VOX or manual)
-   *   TCI          — trx:0,true/false via TCI WebSocket
-   *   SerialDTR    — DTR line on a COM port (QSerialPort, no daemon)
-   *   SerialRTS    — RTS line on a COM port (QSerialPort, no daemon)
-   *   Rigctld      — T 1 / T 0 via rigctld TCP (Hamlib daemon)
-   *   TciAndDTR    — TCI + DTR simultaneously
-   *   TciAndRTS    — TCI + RTS simultaneously
-   *   TciAndRigctl — TCI + rigctld simultaneously
+   *   None      — no PTT (VOX or manual)
+   *   TCI       — trx:0,true/false via TCI WebSocket
+   *   SerialDTR — DTR line on a COM port (QSerialPort, no daemon)
+   *   SerialRTS — RTS line on a COM port (QSerialPort, no daemon)
+   *   Rigctld   — T 1 / T 0 via rigctld TCP (Hamlib daemon)
    */
   enum class PttMode {
-    None,
-    TCI,
-    SerialDTR,
-    SerialRTS,
-    Rigctld,
-    TciAndDTR,
-    TciAndRTS,
-    TciAndRigctl
+    None,       // geen PTT (VOX of handmatig)
+    TCI,        // trx:0,true/false via TCI WebSocket
+    SerialDTR,  // DTR lijn op COM poort (QSerialPort, geen daemon)
+    SerialRTS,  // RTS lijn op COM poort (QSerialPort, geen daemon)
+    Rigctld,    // T 1 / T 0 via rigctld TCP (Hamlib daemon)
   };
 
   explicit NativeRTTYTx(TCIClient *client, QObject *parent = nullptr);
