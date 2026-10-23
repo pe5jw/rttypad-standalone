@@ -1,8 +1,32 @@
 #include "NativeRTTYTx.h"
 #include "TCIClient.h"
 
+#ifdef HAVE_STANDALONE_TX
+#include "StandaloneRTTYTx.h"
+#endif
+
 NativeRTTYTx::NativeRTTYTx(TCIClient *client, QObject *parent)
-  : QObject(parent), client_(client) {
+  : QObject(parent), client_(client)
+{
+#ifdef HAVE_STANDALONE_TX
+  standalone_ = new StandaloneRTTYTx(this);
+  connect(standalone_, &StandaloneRTTYTx::bufferEmptyReceived,
+          this, &NativeRTTYTx::bufferEmptyReceived);
+  connect(standalone_, &StandaloneRTTYTx::drainBufferEmpty,
+          this, &NativeRTTYTx::drainBufferEmpty);
+  connect(standalone_, &StandaloneRTTYTx::stateChanged,
+          this, [this](StandaloneRTTYTx::State s) {
+    if (mode_ != Mode::Standalone) return;
+    switch (s) {
+    case StandaloneRTTYTx::State::Idle:     setState(State::Idle);     break;
+    case StandaloneRTTYTx::State::Sending:  setState(State::Sending);  break;
+    case StandaloneRTTYTx::State::Draining: setState(State::Draining); break;
+    }
+  });
+  connect(standalone_, &StandaloneRTTYTx::audioError,
+          this, [](const QString &e){ qWarning() << "StandaloneRTTYTx:" << e; });
+#endif
+  {
   connect(client_, &TCIClient::connected, this, [this] {
     bufferEmpty_ = true;
     nativeRttyConfirmed_ = false;
@@ -46,6 +70,18 @@ NativeRTTYTx::NativeRTTYTx(TCIClient *client, QObject *parent)
   });
 }
 
+NativeRTTYTx::~NativeRTTYTx() = default;
+
+void NativeRTTYTx::setMode(Mode mode)
+{
+  if (mode_ == mode) return;
+  // Stop whichever engine is currently running
+  stop();
+  mode_ = mode;
+  qDebug() << "NativeRTTYTx: mode ->"
+           << (mode == Mode::TCI ? "TCI" : "Standalone");
+}
+
 void NativeRTTYTx::setState(State state) {
   if (state_ == state) {
     return;
@@ -77,6 +113,10 @@ QString NativeRTTYTx::escapePayload(const QString &text) {
 }
 
 bool NativeRTTYTx::send(const QString &text) {
+#ifdef HAVE_STANDALONE_TX
+  if (mode_ == Mode::Standalone)
+    return standalone_->send(text);
+#endif
   if (!client_->isConnected() || !nativeRttyConfirmed_ || state_ == State::Draining) {
     return false;
   }
@@ -96,6 +136,10 @@ bool NativeRTTYTx::send(const QString &text) {
 }
 
 bool NativeRTTYTx::start() {
+#ifdef HAVE_STANDALONE_TX
+  if (mode_ == Mode::Standalone)
+    return standalone_->start();
+#endif
   if (!client_->isConnected() || !nativeRttyConfirmed_) {
     return false;
   }
@@ -114,6 +158,10 @@ bool NativeRTTYTx::start() {
 }
 
 bool NativeRTTYTx::drain() {
+#ifdef HAVE_STANDALONE_TX
+  if (mode_ == Mode::Standalone)
+    return standalone_->drain();
+#endif
   // Draining an idle engine can leave the UI waiting for a buffer-empty
   // notification that the server has no reason to send.
   if (!client_->isConnected() || state_ != State::Sending) {
@@ -125,6 +173,10 @@ bool NativeRTTYTx::drain() {
 }
 
 bool NativeRTTYTx::stop() {
+#ifdef HAVE_STANDALONE_TX
+  if (mode_ == Mode::Standalone)
+    return standalone_->stop();
+#endif
   if (!client_->isConnected()) {
     return false;
   }
