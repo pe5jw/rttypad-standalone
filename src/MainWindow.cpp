@@ -431,6 +431,23 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     QSettings().setValue(QStringLiteral("tci/autoSetupBandChange"), enabled);
   });
   setupPopup->addSeparator();
+#ifdef HAVE_STANDALONE_TX
+  {
+    auto *standaloneAction = setupPopup->addAction(QStringLiteral("Standalone TX (miniaudio)"));
+    standaloneAction->setCheckable(true);
+    const bool useStandalone = QSettings().value(QStringLiteral("tx/standalone"), true).toBool();
+    standaloneAction->setChecked(useStandalone);
+    standaloneAction->setToolTip(QStringLiteral(
+        "Generate FSK audio locally via miniaudio instead of sending text to deskHPSDR.\n"
+        "Reconnect for the change to take effect."));
+    tx_.setMode(useStandalone ? NativeRTTYTx::Mode::Standalone : NativeRTTYTx::Mode::TCI);
+    connect(standaloneAction, &QAction::toggled, this, [this](bool enabled) {
+      QSettings().setValue(QStringLiteral("tx/standalone"), enabled);
+      tx_.setMode(enabled ? NativeRTTYTx::Mode::Standalone : NativeRTTYTx::Mode::TCI);
+    });
+  }
+  setupPopup->addSeparator();
+#endif
   auto *sendLogAction = setupPopup->addAction(QStringLiteral("Send log via UDP"));
   sendLogAction->setCheckable(true);
   sendLogAction->setChecked(QSettings().value(QStringLiteral("log/sendViaUdp"), true).toBool());
@@ -1397,7 +1414,8 @@ void MainWindow::updateAfc(const float *samples, size_t count, double sampleRate
 
 void MainWindow::updateTxUi() {
   const auto state = tx_.state();
-  const bool connected = tci_.isConnected() && nativeRttyConfirmed_ && state != NativeRTTYTx::State::Disconnected;
+  const bool txReady = nativeRttyConfirmed_ || tx_.mode() == NativeRTTYTx::Mode::Standalone;
+  const bool connected = tci_.isConnected() && txReady && state != NativeRTTYTx::State::Disconnected;
   const bool draining = state == NativeRTTYTx::State::Draining;
   sendButton_->setEnabled(connected && !draining);
   drainButton_->setEnabled(connected && state == NativeRTTYTx::State::Sending);
@@ -1973,7 +1991,8 @@ void MainWindow::editStationSettings() {
 }
 
 void MainWindow::runMacro(int index) {
-  if (!tci_.isConnected() || !nativeRttyConfirmed_ || tx_.state() == NativeRTTYTx::State::Draining) { return; }
+  const bool macroReady = nativeRttyConfirmed_ || tx_.mode() == NativeRTTYTx::Mode::Standalone;
+  if (!tci_.isConnected() || !macroReady || tx_.state() == NativeRTTYTx::State::Draining) { return; }
   QSettings settings;
   const bool contest = contestMode_->isChecked();
   const bool cqww = contestType_->currentText() == QStringLiteral("CQ-WW-RTTY");
@@ -2146,6 +2165,16 @@ void MainWindow::failNativeRttyCheck() {
   if (!nativeRttyCheckPending_) { return; }
   nativeRttyCheckPending_ = false;
   ++nativeRttyCheckGeneration_;
+  // In standalone TX mode the TCI server is not required to advertise
+  // native RTTY support — audio is generated locally by miniaudio.
+#ifdef HAVE_STANDALONE_TX
+  if (tx_.mode() == NativeRTTYTx::Mode::Standalone) {
+    nativeRttyConfirmed_ = false;   // keep false; standalone ignores it
+    tx_.setNativeRttyConfirmed(false);
+    updateTxUi();
+    return;                          // do NOT disconnect or show the dialog
+  }
+#endif
   nativeRttyConfirmed_ = false;
   tx_.setNativeRttyConfirmed(false);
   updateTxUi();
