@@ -48,6 +48,10 @@ public:
   Dialect dialect() const { return dialect_; }
   bool isDeskHPSDR() const { return dialect_ == Dialect::DeskHPSDR; }
 
+  // Send a block of mono float32 PCM samples as a TCI TX audio stream frame.
+  // sampleRate must match what the server expects (typically 8000 Hz for RTTY).
+  void sendTxAudioFrame(const float *samples, quint32 count, quint32 sampleRate);
+
 signals:
   void logLine(const QString &line);
   void connected();

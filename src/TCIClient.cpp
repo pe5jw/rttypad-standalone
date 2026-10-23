@@ -1,6 +1,7 @@
 #include "TCIClient.h"
 
 #include <QAbstractSocket>
+#include <QByteArray>
 #include <QTimer>
 #include <QUrl>
 #include <algorithm>
@@ -132,6 +133,45 @@ void TCIClient::sendInitialTCICommands() {
         sendText(cmd);
     });
   }
+}
+
+namespace {
+void writeU32LE(char *p, quint32 v) {
+  p[0] = char(v & 0xff);
+  p[1] = char((v >> 8) & 0xff);
+  p[2] = char((v >> 16) & 0xff);
+  p[3] = char((v >> 24) & 0xff);
+}
+} // namespace (anonymous, appended)
+
+void TCIClient::sendTxAudioFrame(const float *samples, quint32 count, quint32 sampleRate)
+{
+  if (!isConnected() || !samples || count == 0) return;
+
+  // TCI binary frame: 64-byte header + raw float32 LE payload
+  //   offset  0: receiver index  (uint32 LE) — always 0
+  //   offset  4: sample rate     (uint32 LE)
+  //   offset  8: format          (uint32 LE) — 3 = float32
+  //   offset 12: codec           (uint32 LE) — 0
+  //   offset 16: crc             (uint32 LE) — 0 (not used)
+  //   offset 20: length          (uint32 LE) — number of samples
+  //   offset 24: type            (uint32 LE) — 2 = TX audio
+  //   offset 28: channels        (uint32 LE) — 1 = mono
+  //   offset 32..63: reserved (zeros)
+  constexpr int kHdr = 64;
+  const qsizetype payloadBytes = qsizetype(count) * sizeof(float);
+  QByteArray frame(kHdr + payloadBytes, '\0');
+  char *h = frame.data();
+  writeU32LE(h +  0, 0);          // receiver
+  writeU32LE(h +  4, sampleRate);
+  writeU32LE(h +  8, 3);          // format: float32
+  writeU32LE(h + 12, 0);          // codec
+  writeU32LE(h + 16, 0);          // crc
+  writeU32LE(h + 20, count);      // length = number of samples
+  writeU32LE(h + 24, 2);          // type: TX audio
+  writeU32LE(h + 28, 1);          // channels: mono
+  std::memcpy(frame.data() + kHdr, samples, payloadBytes);
+  sendBinaryData(frame);
 }
 
 TCIStreamInfo TCIClient::parseStreamInfo(const QByteArray &data) {

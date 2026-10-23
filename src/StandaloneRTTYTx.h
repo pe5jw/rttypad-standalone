@@ -10,6 +10,8 @@
 #include <QObject>
 #include <QString>
 #include <QStringList>
+#include <QByteArray>
+#include <atomic>
 
 /* Forward-declare miniaudio device to keep it out of the public header */
 struct ma_device;
@@ -30,6 +32,11 @@ public:
     static QStringList availableOutputDevices(); /* "[idx] Name" list */
     bool setOutputDevice(int deviceIndex);        /* -1 = system default */
     void setSampleRate(double sr);                /* default 48000 */
+
+    // Enable/disable forwarding rendered TX audio via the txAudioBlock signal.
+    // When enabled, each rendered audio block is also emitted as txAudioBlock
+    // (QueuedConnection — safe to connect to main-thread slots like TCIClient).
+    void setTciTxAudioEnabled(bool en) { m_tciTxEnabled.store(en); }
 
     /* ---- FSK config --------------------------------------------- */
     void setBaud(double baud);
@@ -59,6 +66,9 @@ signals:
     void bufferEmptyReceived();
     void drainBufferEmpty();
     void audioError(const QString &msg);
+    // Emitted from the audio thread when TCI TX audio tap is active.
+    // Connect with Qt::QueuedConnection to process on the main thread.
+    void txAudioBlock(QByteArray samples, quint32 sampleRate);
 
 private:
     void setState(State s);
@@ -73,6 +83,7 @@ private:
 
     State m_state       = State::Idle;
     bool  m_bufferEmpty = true;
+    std::atomic<bool> m_tciTxEnabled{false};
 
     /* miniaudio data callback (static C shim) */
     static void maDataCallback(ma_device *dev, void *out,

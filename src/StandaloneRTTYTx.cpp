@@ -147,9 +147,20 @@ void StandaloneRTTYTx::maDataCallback(ma_device *dev, void *out,
 {
     auto *self = static_cast<StandaloneRTTYTx *>(dev->pUserData);
     float *buf = static_cast<float *>(out);
-    int sr = (int)dev->sampleRate;
-    rttye_render(buf, (int)frames, sr, 1 /* mono */);
-    (void)self;
+    const quint32 sr = dev->sampleRate;
+    rttye_render(buf, (int)frames, (int)sr, 1 /* mono */);
+    // Forward rendered samples via Qt signal (QueuedConnection) so the
+    // main thread can send them as TCI binary TX audio frames.
+    // QMetaObject::invokeMethod is the only way to safely cross to Qt's
+    // event loop from a non-Qt thread (the miniaudio audio thread).
+    if (self->m_tciTxEnabled.load(std::memory_order_relaxed)) {
+        QByteArray block(reinterpret_cast<const char *>(buf),
+                         qsizetype(frames) * qsizetype(sizeof(float)));
+        QMetaObject::invokeMethod(self, "txAudioBlock",
+                                  Qt::QueuedConnection,
+                                  Q_ARG(QByteArray, block),
+                                  Q_ARG(quint32, sr));
+    }
 }
 
 /* ------------------------------------------------------------------ */

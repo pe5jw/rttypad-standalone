@@ -82,6 +82,7 @@ private:
   void openTciSettingsDialog();
   void applyTciOffMode(bool disabled);
   void applyTciDialect(const QString &dialect);
+  void connectTciTxAudio();   // wire txAudioBlock → tci_.sendTxAudioFrame
   bool tciDisabled_ = false;
   QLineEdit *host_ = nullptr;
   QLineEdit *port_ = nullptr;
