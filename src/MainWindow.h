@@ -81,6 +81,7 @@ private:
   void openPttSettingsDialog();
   void openTciSettingsDialog();
   void applyTciOffMode(bool disabled);
+  void applyTciDialect(const QString &dialect);
   bool tciDisabled_ = false;
   QLineEdit *host_ = nullptr;
   QLineEdit *port_ = nullptr;

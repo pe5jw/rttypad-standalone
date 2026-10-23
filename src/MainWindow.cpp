@@ -516,6 +516,13 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     QTimer::singleShot(0, this, [this] { applyTciOffMode(true); });
   }
 
+  // Apply saved TCI dialect (sets PTT suffix etc.)
+  {
+    const QString dialect = QSettings().value(QStringLiteral("tci/dialect"),
+                                               QStringLiteral("generic")).toString();
+    applyTciDialect(dialect);
+  }
+
   // ---- Settings TCI… dialoog ------------------------------------
   setupPopup->addAction(QStringLiteral("Settings TCI…"), this, [this] { openTciSettingsDialog(); });
 
@@ -3398,14 +3405,28 @@ void MainWindow::openTciSettingsDialog()
   connect(buttons, &QDialogButtonBox::accepted, &dialog, [&] {
     settings.setValue(QStringLiteral("tci/autoSetup"),       autoSetup->isChecked());
     settings.setValue(QStringLiteral("tci/autoSetupBandChange"), bandChange->isChecked());
-    settings.setValue(QStringLiteral("tci/dialect"),
-                      dialectCombo->currentData().toString());
-    settings.setValue(QStringLiteral("tci/sampleRate"),
-                      srCombo->currentData().toInt());
+    const QString dialect = dialectCombo->currentData().toString();
+    settings.setValue(QStringLiteral("tci/dialect"),   dialect);
+    settings.setValue(QStringLiteral("tci/sampleRate"), srCombo->currentData().toInt());
+    applyTciDialect(dialect);
     dialog.accept();
   });
   connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
   dialog.exec();
+}
+
+// ---- Apply TCI dialect — sets PTT suffix and other dialect quirks ----------
+void MainWindow::applyTciDialect(const QString &dialect)
+{
+  // SDRoxide and Bolt require ",tci" suffix on trx:0,true/false so the
+  // server routes the TCI audio stream to the TX path.
+  // deskHPSDR and Thetis accept plain trx:0,true without suffix.
+  QString suffix;
+  if (dialect == QStringLiteral("sdroxide") || dialect == QStringLiteral("bolt")) {
+    suffix = QStringLiteral(",tci");
+  }
+  tx_.setTciPttSuffix(suffix);
+  qDebug() << "TCI dialect:" << dialect << "PTT suffix:" << (suffix.isEmpty() ? "(none)" : suffix);
 }
 
 // ---- TCI off — hide/show TCI elements ------------------------------------

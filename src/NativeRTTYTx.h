@@ -47,6 +47,9 @@ public:
   void setRigctlHost(const QString &host);
   void setRigctlPort(int port);
 
+  /* TCI PTT suffix — some servers need ",tci" to route audio to TX */
+  void setTciPttSuffix(const QString &suffix) { tciPttSuffix_ = suffix; }
+
   /* ---- Unified control ----------------------------------------- */
   bool send(const QString &text);
   bool start();
@@ -76,6 +79,7 @@ private:
   State       state_               = State::Disconnected;
   bool        bufferEmpty_         = true;
   bool        nativeRttyConfirmed_ = false;
+  QString     tciPttSuffix_;           // e.g. ",tci" for SDRoxide/Bolt
 
 #ifdef HAVE_STANDALONE_TX
   StandaloneRTTYTx *standalone_ = nullptr;
