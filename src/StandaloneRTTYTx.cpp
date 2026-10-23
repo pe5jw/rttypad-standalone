@@ -143,7 +143,7 @@ void StandaloneRTTYTx::closeDevice()
 
 /* miniaudio audio thread callback */
 void StandaloneRTTYTx::maDataCallback(ma_device *dev, void *out,
-                                       const void * /*in*/, ma_uint32 frames)
+                                       const void * /*in*/, unsigned int frames)
 {
     auto *self = static_cast<StandaloneRTTYTx *>(dev->pUserData);
     float *buf = static_cast<float *>(out);

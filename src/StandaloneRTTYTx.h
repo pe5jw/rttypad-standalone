@@ -76,7 +76,7 @@ private:
 
     /* miniaudio data callback (static C shim) */
     static void maDataCallback(ma_device *dev, void *out,
-                               const void *in, ma_uint32 frames);
+                               const void *in, unsigned int frames);
 
     /* Engine callbacks — bounce to Qt main thread */
     static void onBufferEmpty();
