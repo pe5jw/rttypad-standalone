@@ -1,6 +1,10 @@
 #include "MainWindow.h"
 #include "RTTYScopeWidget.h"
 #include "RTTYIQPanWidget.h"
+#ifdef HAVE_STANDALONE_TX
+#include "StandaloneRTTYRx.h"
+#include "StandaloneRTTYTx.h"
+#endif
 
 #include <QFormLayout>
 #include <QFont>
@@ -444,7 +448,14 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     connect(standaloneAction, &QAction::toggled, this, [this](bool enabled) {
       QSettings().setValue(QStringLiteral("tx/standalone"), enabled);
       tx_.setMode(enabled ? NativeRTTYTx::Mode::Standalone : NativeRTTYTx::Mode::TCI);
+      if (enabled) startStandaloneRx(); else stopStandaloneRx();
     });
+    setupPopup->addAction(QStringLiteral("Audio Devices…"), this,
+                          [this] { openAudioSettingsDialog(); });
+    // Start RX immediately if standalone mode is already on
+    if (useStandalone) {
+      QTimer::singleShot(0, this, [this] { startStandaloneRx(); });
+    }
   }
   setupPopup->addSeparator();
 #endif
@@ -1135,6 +1146,70 @@ MainWindow::~MainWindow() {
   rtty_rx_destroy(rx_);
 }
 
+/* Shared decoder core — called from TCI path and standalone mic path */
+void MainWindow::processRxSamples(const float *buf, int frames, double sr, bool isUsb)
+{
+  if (!rx_ || frames <= 0 || sr < 8000.0) return;
+  if (rxSampleRate_ != (quint32)sr) {
+    rxSampleRate_ = (quint32)sr;
+    configureRx();
+  }
+  samples_.assign(buf, buf + frames);
+  RTTY_RX_SCOPE scope{};
+  char decoded[512]{};
+  const int count = rtty_rx_process(rx_, samples_.data(), frames, decoded, sizeof(decoded));
+  rtty_rx_get_scope(rx_, &scope);
+  scopeWidget_->updateWaterfall(samples_.data(), frames, sr,
+                                center_->value(), shift_->value(), isUsb, scope.carrier != 0);
+  scopeWidget_->updateSample(scope);
+  updateTuningIndicators(scope);
+  updateAfc(samples_.data(), frames, sr, scope.carrier != 0);
+  bool outputCarrier = scope.carrier != 0;
+  if (strictLock_ && strictLock_->isChecked()) {
+    strictGateBlocks_ = scope.gate_open ? std::min(strictGateBlocks_ + 1, 1000) : 0;
+    outputCarrier = strictGateBlocks_ >= 6;
+  } else {
+    strictGateBlocks_ = 0;
+  }
+  if (!outputCarrier) {
+    if (++noCarrierBlocks_ >= 50) { noCarrierBlocks_ = 0; decodedLocked_ = false; pendingDecoded_.clear(); }
+    return;
+  }
+  noCarrierBlocks_ = 0;
+  if (count <= 0) return;
+  QString decodedText = QString::fromLatin1(decoded, count);
+  if (strictLock_ && strictLock_->isChecked() && !decodedLocked_) {
+    pendingDecoded_ += decodedText;
+    if (pendingDecoded_.size() > 256) pendingDecoded_ = pendingDecoded_.right(256);
+    const qsizetype ry = pendingDecoded_.indexOf(QStringLiteral("RYRY"));
+    if (ry >= 0) {
+      decodedText = pendingDecoded_.mid(ry);
+    } else {
+      qsizetype plausible = 0;
+      for (qsizetype i = pendingDecoded_.size(); i > 0; --i) {
+        const QChar ch = pendingDecoded_.at(i - 1);
+        const ushort c = ch.unicode();
+        if (!((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+              QStringLiteral(" \r\n.,?!/-+=:;'\"()&$").contains(ch))) break;
+        ++plausible;
+      }
+      if (plausible < 8) return;
+      decodedText = pendingDecoded_.right(plausible);
+    }
+    pendingDecoded_.clear();
+    decodedLocked_ = true;
+  }
+  QTextCursor cursor = decoder_->textCursor();
+  cursor.movePosition(QTextCursor::End);
+  QTextCharFormat rxFormat;
+  rxFormat.setForeground(QColor(QStringLiteral("#e0e0e0")));
+  cursor.insertText(decodedText, rxFormat);
+  txEchoLineActive_ = false;
+  decoder_->setTextCursor(cursor);
+  decoder_->ensureCursorVisible();
+  appendMonitorLogText(decodedText);
+}
+
 void MainWindow::processRxAudio(const QByteArray &data, const TCIStreamInfo &info) {
   if (!rx_ || !info.isRxAudioFloat32 || info.sampleRate < 8000 ||
       info.channels == 0 || info.channels > 8 || info.audioFrames == 0 ||
@@ -1146,82 +1221,16 @@ void MainWindow::processRxAudio(const QByteArray &data, const TCIStreamInfo &inf
       quint64(data.size()) < quint64(info.payloadOffset) + needed) {
     return;
   }
-  if (rxSampleRate_ != info.sampleRate) {
-    rxSampleRate_ = info.sampleRate;
-    configureRx();
-  }
-  samples_.resize(info.audioFrames);
+  // Extract first channel (downmix multichannel to mono)
+  tmpSamples_.resize(info.audioFrames);
   const char *payload = data.constData() + info.payloadOffset;
   for (quint32 i = 0; i < info.audioFrames; ++i) {
     float value;
     std::memcpy(&value, payload + size_t(i) * info.channels * sizeof(float), sizeof(float));
-    samples_[i] = std::isfinite(value) ? value : 0.0f;
+    tmpSamples_[i] = std::isfinite(value) ? value : 0.0f;
   }
-  RTTY_RX_SCOPE scope{};
-  char decoded[512] {};
-  const int count = rtty_rx_process(rx_, samples_.data(), samples_.size(), decoded, sizeof(decoded));
-  rtty_rx_get_scope(rx_, &scope);
-  // The waterfall uses the MARK/SPACE pitch, not the decoder center frequency.
-  // Keep its carrier gating identical to the AppKit implementation.
-  scopeWidget_->updateWaterfall(samples_.data(), samples_.size(), info.sampleRate,
-                                center_->value(), shift_->value(),
-                                tciMode_ == QStringLiteral("DIGU"), scope.carrier != 0);
-  scopeWidget_->updateSample(scope);
-  updateTuningIndicators(scope);
-  updateAfc(samples_.data(), samples_.size(), info.sampleRate, scope.carrier != 0);
-  // AppKit Strict Lock: six consecutive open-gate blocks, followed by
-  // RYRY or eight plausible printable characters before displaying text.
-  bool outputCarrier = scope.carrier != 0;
-  if (strictLock_ && strictLock_->isChecked()) {
-    strictGateBlocks_ = scope.gate_open ? std::min(strictGateBlocks_ + 1, 1000) : 0;
-    outputCarrier = strictGateBlocks_ >= 6;
-  } else {
-    strictGateBlocks_ = 0;
-  }
-  if (!outputCarrier) {
-    if (++noCarrierBlocks_ >= 50) {
-      noCarrierBlocks_ = 0;
-      decodedLocked_ = false;
-      pendingDecoded_.clear();
-    }
-    return;
-  }
-  noCarrierBlocks_ = 0;
-  if (count <= 0) { return; }
-  QString decodedText = QString::fromLatin1(decoded, count);
-  if (strictLock_ && strictLock_->isChecked() && !decodedLocked_) {
-    pendingDecoded_ += decodedText;
-    if (pendingDecoded_.size() > 256) { pendingDecoded_ = pendingDecoded_.right(256); }
-    const qsizetype ry = pendingDecoded_.indexOf(QStringLiteral("RYRY"));
-    if (ry >= 0) {
-      decodedText = pendingDecoded_.mid(ry);
-    } else {
-      qsizetype plausible = 0;
-      for (qsizetype i = pendingDecoded_.size(); i > 0; --i) {
-        const QChar ch = pendingDecoded_.at(i - 1);
-        const ushort c = ch.unicode();
-        const bool allowed = (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
-                             QStringLiteral(" \r\n.,?!/-+=:;'\"()&$").contains(ch);
-        if (!allowed) { break; }
-        ++plausible;
-      }
-      if (plausible < 8) { return; }
-      decodedText = pendingDecoded_.right(plausible);
-    }
-    pendingDecoded_.clear();
-    decodedLocked_ = true;
-  }
-  QTextCursor cursor = decoder_->textCursor();
-  cursor.movePosition(QTextCursor::End);
-  // Never inherit the preceding TX character format. A QTextCursor at the
-  // end of a document otherwise continues using the last inserted color.
-  QTextCharFormat rxFormat;
-  rxFormat.setForeground(QColor(QStringLiteral("#e0e0e0")));
-  cursor.insertText(decodedText, rxFormat);
-  txEchoLineActive_ = false;
-  decoder_->setTextCursor(cursor);
-  decoder_->ensureCursorVisible();
-  appendMonitorLogText(decodedText);
+  processRxSamples(tmpSamples_.data(), (int)info.audioFrames, info.sampleRate,
+                   tciMode_ == QStringLiteral("DIGU"));
 }
 
 void MainWindow::appendTxTraffic(const QString &text) {
@@ -2160,6 +2169,84 @@ void MainWindow::updateRxStatus() {
                  .arg(tci_.isConnected() ? QStringLiteral("Connected (Native RTTY)")
                       : QStringLiteral("Disconnected")));
 }
+
+#ifdef HAVE_STANDALONE_TX
+void MainWindow::startStandaloneRx()
+{
+  if (!standaloneRx_) {
+    standaloneRx_ = new StandaloneRTTYRx(this);
+    connect(standaloneRx_, &StandaloneRTTYRx::audioError,
+            this, [](const QString &e){ qWarning() << "StandaloneRTTYRx:" << e; });
+    standaloneRx_->setAudioCallback([this](const float *samples, int frames, double sr) {
+      // Called on audio thread — copy and post to main thread
+      QByteArray buf(reinterpret_cast<const char *>(samples), frames * (int)sizeof(float));
+      QMetaObject::invokeMethod(this, [this, buf, frames, sr] {
+        processRxSamples(reinterpret_cast<const float *>(buf.constData()), frames, sr, false);
+      }, Qt::QueuedConnection);
+    });
+  }
+  const int devIdx = QSettings().value(QStringLiteral("audio/rxDevice"), -1).toInt();
+  const double sr   = QSettings().value(QStringLiteral("audio/rxSampleRate"), 48000.0).toDouble();
+  standaloneRx_->setInputDevice(devIdx);
+  standaloneRx_->setSampleRate(sr);
+  standaloneRx_->start();
+}
+
+void MainWindow::stopStandaloneRx()
+{
+  if (standaloneRx_) standaloneRx_->stop();
+}
+
+void MainWindow::openAudioSettingsDialog()
+{
+  QDialog dlg(this);
+  dlg.setWindowTitle(QStringLiteral("Audio Device Settings"));
+  auto *layout = new QVBoxLayout(&dlg);
+  auto *form   = new QFormLayout();
+
+  // RX input
+  auto *rxCombo = new QComboBox(&dlg);
+  rxCombo->addItem(QStringLiteral("[default]"));
+  const auto rxDevices = StandaloneRTTYRx::availableInputDevices();
+  for (const QString &d : rxDevices) rxCombo->addItem(d);
+  const int savedRx = QSettings().value(QStringLiteral("audio/rxDevice"), -1).toInt();
+  rxCombo->setCurrentIndex(savedRx + 1);  // 0 = default = index 0
+  form->addRow(QStringLiteral("RX Input:"), rxCombo);
+
+  // TX output
+  auto *txCombo = new QComboBox(&dlg);
+  txCombo->addItem(QStringLiteral("[default]"));
+  const auto txDevices = StandaloneRTTYTx::availableOutputDevices();
+  for (const QString &d : txDevices) txCombo->addItem(d);
+  const int savedTx = QSettings().value(QStringLiteral("audio/txDevice"), -1).toInt();
+  txCombo->setCurrentIndex(savedTx + 1);
+  form->addRow(QStringLiteral("TX Output:"), txCombo);
+
+  layout->addLayout(form);
+  auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+  layout->addWidget(buttons);
+  connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+  connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+
+  if (dlg.exec() != QDialog::Accepted) return;
+
+  const int rxIdx = rxCombo->currentIndex() - 1;  // -1 = default
+  const int txIdx = txCombo->currentIndex() - 1;
+  QSettings().setValue(QStringLiteral("audio/rxDevice"), rxIdx);
+  QSettings().setValue(QStringLiteral("audio/txDevice"), txIdx);
+
+  // Apply TX device
+  if (tx_.standaloneEngine()) {
+    tx_.standaloneEngine()->setOutputDevice(txIdx);
+  }
+
+  // Restart RX with new device
+  if (standaloneRx_ && standaloneRx_->isRunning()) {
+    stopStandaloneRx();
+    startStandaloneRx();
+  }
+}
+#endif
 
 void MainWindow::failNativeRttyCheck() {
   if (!nativeRttyCheckPending_) { return; }

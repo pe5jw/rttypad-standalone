@@ -6,6 +6,10 @@
 #include "RTTYRx.h"
 #include <vector>
 
+#ifdef HAVE_STANDALONE_TX
+class StandaloneRTTYRx;
+#endif
+
 class QLabel;
 class RTTYScopeWidget;
 class RTTYIQPanWidget;
@@ -46,7 +50,9 @@ private:
   bool rxReverse() const;
   void updateRxStatus();
   void processRxAudio(const QByteArray &data, const TCIStreamInfo &info);
+  void processRxSamples(const float *buf, int frames, double sampleRate, bool isUsb);
   TCIClient tci_;
+  std::vector<float> tmpSamples_;
   NativeRTTYTx tx_{&tci_};
   void updateTxUi();
   void appendTxTraffic(const QString &text);
@@ -67,6 +73,12 @@ private:
   RTTY_RX *rx_ = nullptr;
   quint32 rxSampleRate_ = 0;
   std::vector<float> samples_;
+#ifdef HAVE_STANDALONE_TX
+  StandaloneRTTYRx *standaloneRx_ = nullptr;
+  void startStandaloneRx();
+  void stopStandaloneRx();
+  void openAudioSettingsDialog();
+#endif
   QLineEdit *host_ = nullptr;
   QLineEdit *port_ = nullptr;
   QPushButton *connectButton_ = nullptr;

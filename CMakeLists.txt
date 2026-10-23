@@ -26,6 +26,7 @@ if(WITH_STANDALONE_TX)
     add_library(rtty_standalone STATIC
         src/rtty_engine_standalone.c
         src/StandaloneRTTYTx.cpp
+        src/StandaloneRTTYRx.cpp
     )
     target_include_directories(rtty_standalone PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_compile_definitions(rtty_standalone PUBLIC HAVE_STANDALONE_TX=1)
