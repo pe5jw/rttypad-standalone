@@ -1,17 +1,18 @@
 #include "NativeRTTYTx.h"
 #include "TCIClient.h"
 #include "RigctlPtt.h"
-
-#ifdef HAVE_STANDALONE_TX
+#include "SerialPtt.h"
 #include "StandaloneRTTYTx.h"
-#endif
 
 NativeRTTYTx::NativeRTTYTx(TCIClient *client, QObject *parent)
   : QObject(parent), client_(client)
 {
-  rigctl_ = new RigctlPtt(this);
-  connect(rigctl_, &RigctlPtt::pttError, this, &NativeRTTYTx::pttError);
-#ifdef HAVE_STANDALONE_TX
+  rigctl_    = new RigctlPtt(this);
+  serialPtt_ = new SerialPtt(this);
+
+  connect(rigctl_,    &RigctlPtt::pttError, this, &NativeRTTYTx::pttError);
+  connect(serialPtt_, &SerialPtt::pttError, this, &NativeRTTYTx::pttError);
+
   standalone_ = new StandaloneRTTYTx(this);
   connect(standalone_, &StandaloneRTTYTx::bufferEmptyReceived,
           this, &NativeRTTYTx::bufferEmptyReceived);
@@ -21,7 +22,7 @@ NativeRTTYTx::NativeRTTYTx(TCIClient *client, QObject *parent)
           this, [this](StandaloneRTTYTx::State s) {
     switch (s) {
     case StandaloneRTTYTx::State::Idle:
-      dropPtt();   // audio finished draining — release PTT
+      dropPtt();
       setState(State::Idle);
       break;
     case StandaloneRTTYTx::State::Sending:
@@ -34,37 +35,21 @@ NativeRTTYTx::NativeRTTYTx(TCIClient *client, QObject *parent)
   });
   connect(standalone_, &StandaloneRTTYTx::audioError,
           this, [](const QString &e){ qWarning() << "StandaloneRTTYTx:" << e; });
-#endif
+
   connect(client_, &TCIClient::connected, this, [this] {
     bufferEmpty_ = true;
-    nativeRttyConfirmed_ = false;
     setState(State::Idle);
   });
   connect(client_, &TCIClient::disconnected, this, [this](const QString &) {
     bufferEmpty_ = true;
-    nativeRttyConfirmed_ = false;
     setState(State::Disconnected);
   });
-  // TX state is driven by the standalone audio engine (stateChanged signal).
-  // No TCI text commands are needed for TX control.
 }
 
 NativeRTTYTx::~NativeRTTYTx() = default;
 
-void NativeRTTYTx::setMode(Mode mode)
-{
-  if (mode_ == mode) return;
-  // Stop whichever engine is currently running
-  stop();
-  mode_ = mode;
-  qDebug() << "NativeRTTYTx: mode ->"
-           << (mode == Mode::TCI ? "TCI" : "Standalone");
-}
-
 void NativeRTTYTx::setState(State state) {
-  if (state_ == state) {
-    return;
-  }
+  if (state_ == state) return;
   state_ = state;
   emit stateChanged(state_);
 }
@@ -72,15 +57,37 @@ void NativeRTTYTx::setState(State state) {
 void NativeRTTYTx::setRigctlHost(const QString &host) { rigctl_->setHost(host); }
 void NativeRTTYTx::setRigctlPort(int port)            { rigctl_->setPort(port); }
 
+void NativeRTTYTx::setSerialPttPort(const QString &portName)
+{
+  // Close existing port before switching
+  if (serialPtt_->isOpen()) serialPtt_->close();
+  serialPtt_->setPortName(portName);
+}
+
 void NativeRTTYTx::raisePtt()
 {
-  const bool useTci    = (pttMode_ == PttMode::TCI    || pttMode_ == PttMode::TCIAndSerial);
-  const bool useSerial = (pttMode_ == PttMode::Serial || pttMode_ == PttMode::TCIAndSerial);
+  using PM = PttMode;
+  const bool useTci    = (pttMode_ == PM::TCI || pttMode_ == PM::TciAndDTR ||
+                          pttMode_ == PM::TciAndRTS || pttMode_ == PM::TciAndRigctl);
+  const bool useDTR    = (pttMode_ == PM::SerialDTR || pttMode_ == PM::TciAndDTR);
+  const bool useRTS    = (pttMode_ == PM::SerialRTS || pttMode_ == PM::TciAndRTS);
+  const bool useRigctl = (pttMode_ == PM::Rigctld    || pttMode_ == PM::TciAndRigctl);
+
   if (useTci && client_->isConnected()) {
     client_->sendText(QStringLiteral("trx:0,true%1;").arg(tciPttSuffix_));
-    qDebug() << "NativeRTTYTx: PTT ON via TCI" << tciPttSuffix_;
+    qDebug() << "NativeRTTYTx: PTT ON via TCI";
   }
-  if (useSerial) {
+  if (useDTR) {
+    serialPtt_->setLine(SerialPtt::Line::DTR);
+    serialPtt_->setPtt(true);
+    qDebug() << "NativeRTTYTx: PTT ON via DTR";
+  }
+  if (useRTS) {
+    serialPtt_->setLine(SerialPtt::Line::RTS);
+    serialPtt_->setPtt(true);
+    qDebug() << "NativeRTTYTx: PTT ON via RTS";
+  }
+  if (useRigctl) {
     rigctl_->setPtt(true);
     qDebug() << "NativeRTTYTx: PTT ON via rigctld";
   }
@@ -88,74 +95,47 @@ void NativeRTTYTx::raisePtt()
 
 void NativeRTTYTx::dropPtt()
 {
-  const bool useTci    = (pttMode_ == PttMode::TCI    || pttMode_ == PttMode::TCIAndSerial);
-  const bool useSerial = (pttMode_ == PttMode::Serial || pttMode_ == PttMode::TCIAndSerial);
+  using PM = PttMode;
+  const bool useTci    = (pttMode_ == PM::TCI || pttMode_ == PM::TciAndDTR ||
+                          pttMode_ == PM::TciAndRTS || pttMode_ == PM::TciAndRigctl);
+  const bool useDTR    = (pttMode_ == PM::SerialDTR || pttMode_ == PM::TciAndDTR);
+  const bool useRTS    = (pttMode_ == PM::SerialRTS || pttMode_ == PM::TciAndRTS);
+  const bool useRigctl = (pttMode_ == PM::Rigctld    || pttMode_ == PM::TciAndRigctl);
+
   if (useTci && client_->isConnected()) {
     client_->sendText(QStringLiteral("trx:0,false%1;").arg(tciPttSuffix_));
-    qDebug() << "NativeRTTYTx: PTT OFF via TCI" << tciPttSuffix_;
+    qDebug() << "NativeRTTYTx: PTT OFF via TCI";
   }
-  if (useSerial) {
+  if (useDTR) {
+    serialPtt_->setLine(SerialPtt::Line::DTR);
+    serialPtt_->setPtt(false);
+    qDebug() << "NativeRTTYTx: PTT OFF via DTR";
+  }
+  if (useRTS) {
+    serialPtt_->setLine(SerialPtt::Line::RTS);
+    serialPtt_->setPtt(false);
+    qDebug() << "NativeRTTYTx: PTT OFF via RTS";
+  }
+  if (useRigctl) {
     rigctl_->setPtt(false);
     qDebug() << "NativeRTTYTx: PTT OFF via rigctld";
   }
 }
 
-QString NativeRTTYTx::escapePayload(const QString &text) {
-  QString escaped;
-  escaped.reserve(text.size() + 16);
-  for (qsizetype i = 0; i < text.size(); ++i) {
-    const QChar ch = text.at(i);
-    if (ch.unicode() == 0x000e || ch.unicode() == 0x000f) {
-      continue;  // ITA2 shift controls are generated by the TCI native RTTY engine.
-    }
-    if (ch == QLatin1Char('\\')) {
-      escaped += QStringLiteral("\\\\");
-    } else if (ch == QLatin1Char('\r') || ch == QLatin1Char('\n')) {
-      if (ch == QLatin1Char('\r') && i + 1 < text.size() && text.at(i + 1) == QLatin1Char('\n')) {
-        ++i;
-      }
-      escaped += QStringLiteral("\\r\\n");
-    } else {
-      escaped += ch;
-    }
-  }
-  return escaped;
-}
-
-bool NativeRTTYTx::send(const QString &text) {
-#ifdef HAVE_STANDALONE_TX
-  // Audio is always generated locally by miniaudio (AFSK via soundcard).
-  // PTT is raised here on first character, regardless of TCI connection.
+bool NativeRTTYTx::send(const QString &text)
+{
   if (state_ == State::Idle)
     raisePtt();
   return standalone_->send(text);
-#else
-  return false;
-#endif
 }
 
-bool NativeRTTYTx::start() {
-#ifdef HAVE_STANDALONE_TX
-  return standalone_->start();
-#else
-  return false;
-#endif
-}
+bool NativeRTTYTx::start()  { return standalone_->start(); }
 
-bool NativeRTTYTx::drain() {
-#ifdef HAVE_STANDALONE_TX
-  return standalone_->drain();
-#else
-  return false;
-#endif
-}
+bool NativeRTTYTx::drain()  { return standalone_->drain(); }
 
-bool NativeRTTYTx::stop() {
-#ifdef HAVE_STANDALONE_TX
-  bool ok = standalone_->stop();
+bool NativeRTTYTx::stop()
+{
+  const bool ok = standalone_->stop();
   if (ok) dropPtt();
   return ok;
-#else
-  return false;
-#endif
 }

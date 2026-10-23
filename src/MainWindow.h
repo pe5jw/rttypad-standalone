@@ -6,9 +6,7 @@
 #include "RTTYRx.h"
 #include <vector>
 
-#ifdef HAVE_STANDALONE_TX
 class StandaloneRTTYRx;
-#endif
 
 class QLabel;
 class RTTYScopeWidget;
@@ -72,18 +70,16 @@ private:
   RTTY_RX *rx_ = nullptr;
   quint32 rxSampleRate_ = 0;
   std::vector<float> samples_;
-#ifdef HAVE_STANDALONE_TX
   StandaloneRTTYRx *standaloneRx_ = nullptr;
   void startStandaloneRx();
   void stopStandaloneRx();
   void openAudioSettingsDialog();
-#endif
   void openPttSettingsDialog();
   void openTciSettingsDialog();
-  void applyTciOffMode(bool disabled);
+  void applyConnectionMode(bool tciMode);  // true = TCI, false = audio/soundcard
   void applyTciDialect(const QString &dialect);
   void connectTciTxAudio();   // wire txAudioBlock → tci_.sendTxAudioFrame
-  bool tciDisabled_ = false;
+  bool tciConnMode_ = true;  // true = TCI connection, false = soundcard audio
   QLineEdit *host_ = nullptr;
   QLineEdit *port_ = nullptr;
   QPushButton *connectButton_ = nullptr;
@@ -148,7 +144,7 @@ private:
   bool autoSetupBandChangeSession_ = true;
   int lastAutoSetupBand_ = 0;
   bool pendingAutoSetupBand_ = false;
-  bool nativeRttyConfirmed_ = false;
+
   bool sessionStarted_ = false;
   double requestedRttyPitchHz_ = 2210.0;
   bool sessionChangedMode_ = false;
