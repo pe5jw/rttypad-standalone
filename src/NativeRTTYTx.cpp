@@ -26,7 +26,6 @@ NativeRTTYTx::NativeRTTYTx(TCIClient *client, QObject *parent)
   connect(standalone_, &StandaloneRTTYTx::audioError,
           this, [](const QString &e){ qWarning() << "StandaloneRTTYTx:" << e; });
 #endif
-  {
   connect(client_, &TCIClient::connected, this, [this] {
     bufferEmpty_ = true;
     nativeRttyConfirmed_ = false;
