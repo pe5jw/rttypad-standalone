@@ -79,6 +79,10 @@ private:
   void stopStandaloneRx();
   void openAudioSettingsDialog();
 #endif
+  void openPttSettingsDialog();
+  void openTciSettingsDialog();
+  void applyTciOffMode(bool disabled);
+  bool tciDisabled_ = false;
   QLineEdit *host_ = nullptr;
   QLineEdit *port_ = nullptr;
   QPushButton *connectButton_ = nullptr;

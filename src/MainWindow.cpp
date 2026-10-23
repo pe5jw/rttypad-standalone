@@ -418,79 +418,59 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
   setupPopup->addAction(QStringLiteral("Macros…"), this, [this] { editMacro(0); });
   setupPopup->addAction(QStringLiteral("Station settings…"), this, [this] { editStationSettings(); });
   setupPopup->addSeparator();
-  auto *autoSetupAction = setupPopup->addAction(QStringLiteral("Auto Setup TCI (DIGL/pitch)"));
-  autoSetupAction->setCheckable(true);
-  autoSetupAction->setChecked(QSettings().value(QStringLiteral("tci/autoSetup"), true).toBool());
-  autoSetupAction->setToolTip(
-          QStringLiteral("Save SDR mode and DIGI offsets, select DIGL for RTTY, restore on disconnect. Changes take effect on next connection."));
-  connect(autoSetupAction, &QAction::toggled, this, [](bool enabled) {
-    QSettings().setValue(QStringLiteral("tci/autoSetup"), enabled);
-  });
-  auto *bandSetupAction = setupPopup->addAction(QStringLiteral("Auto Setup on Band Change"));
-  bandSetupAction->setCheckable(true);
-  bandSetupAction->setChecked(QSettings().value(QStringLiteral("tci/autoSetupBandChange"), true).toBool());
-  bandSetupAction->setEnabled(autoSetupAction->isChecked());
-  bandSetupAction->setToolTip(QStringLiteral("Reapply DIGL and RTTY pitch after a TCI band change. Takes effect on next connection."));
-  connect(autoSetupAction, &QAction::toggled, bandSetupAction, &QAction::setEnabled);
-  connect(bandSetupAction, &QAction::toggled, this, [](bool enabled) {
-    QSettings().setValue(QStringLiteral("tci/autoSetupBandChange"), enabled);
-  });
-  setupPopup->addSeparator();
+  // ---- Audio mode: TCI or soundcard (one exclusive choice) -------
 #ifdef HAVE_STANDALONE_TX
   {
-    // Audio RX source: soundcard (standalone) or TCI stream
-    auto *rxSoundcardAction = setupPopup->addAction(QStringLiteral("Audio RX: soundcard"));
-    rxSoundcardAction->setCheckable(true);
-    const bool useStandaloneRx = QSettings().value(QStringLiteral("rx/standalone"), true).toBool();
-    rxSoundcardAction->setChecked(useStandaloneRx);
-    rxSoundcardAction->setToolTip(QStringLiteral(
-        "Decode RTTY from soundcard mic input instead of TCI I/Q stream.\n"
-        "Uncheck to decode from TCI audio when connected."));
-    connect(rxSoundcardAction, &QAction::toggled, this, [this](bool enabled) {
-      QSettings().setValue(QStringLiteral("rx/standalone"), enabled);
-      if (enabled) startStandaloneRx(); else stopStandaloneRx();
+    auto *audioGroup = new QActionGroup(setupPopup);
+    audioGroup->setExclusive(true);
+
+    auto *audioTciAct   = setupPopup->addAction(QStringLiteral("Audio: TCI"));
+    auto *audioSndAct   = setupPopup->addAction(QStringLiteral("Audio: soundcard"));
+    audioTciAct->setCheckable(true);
+    audioSndAct->setCheckable(true);
+    audioGroup->addAction(audioTciAct);
+    audioGroup->addAction(audioSndAct);
+
+    // 0 = TCI audio, 1 = soundcard
+    const bool useSoundcard = QSettings().value(QStringLiteral("audio/mode"), 0).toInt() == 1;
+    audioTciAct->setChecked(!useSoundcard);
+    audioSndAct->setChecked(useSoundcard);
+
+    auto applyAudioMode = [this](bool soundcard) {
+      QSettings().setValue(QStringLiteral("audio/mode"), soundcard ? 1 : 0);
+      tx_.setMode(soundcard ? NativeRTTYTx::Mode::Standalone : NativeRTTYTx::Mode::TCI);
+      if (soundcard) startStandaloneRx(); else stopStandaloneRx();
+    };
+    tx_.setMode(useSoundcard ? NativeRTTYTx::Mode::Standalone : NativeRTTYTx::Mode::TCI);
+    if (useSoundcard) QTimer::singleShot(0, this, [this] { startStandaloneRx(); });
+
+    connect(audioGroup, &QActionGroup::triggered, this, [applyAudioMode, audioSndAct](QAction *) {
+      applyAudioMode(audioSndAct->isChecked());
     });
 
-    // Audio TX source: soundcard (standalone) or TCI native rtty engine
-    auto *txSoundcardAction = setupPopup->addAction(QStringLiteral("Audio TX: soundcard (AFSK)"));
-    txSoundcardAction->setCheckable(true);
-    const bool useStandalone = QSettings().value(QStringLiteral("tx/standalone"), true).toBool();
-    txSoundcardAction->setChecked(useStandalone);
-    txSoundcardAction->setToolTip(QStringLiteral(
-        "Generate AFSK audio via soundcard instead of TCI native RTTY engine.\n"
-        "PTT via TCI trx command. Works with any TCI server."));
-    tx_.setMode(useStandalone ? NativeRTTYTx::Mode::Standalone : NativeRTTYTx::Mode::TCI);
-    connect(txSoundcardAction, &QAction::toggled, this, [this](bool enabled) {
-      QSettings().setValue(QStringLiteral("tx/standalone"), enabled);
-      tx_.setMode(enabled ? NativeRTTYTx::Mode::Standalone : NativeRTTYTx::Mode::TCI);
-    });
+    setupPopup->addSeparator();
 
-    // PTT method sub-menu for soundcard AFSK TX
+    // ---- PTT method (always available) -----------------------------
     auto *pttMenu = setupPopup->addMenu(QStringLiteral("PTT method"));
-    pttMenu->setEnabled(useStandalone);
-    connect(txSoundcardAction, &QAction::toggled, this, [pttMenu](bool on) { pttMenu->setEnabled(on); });
-
     auto *pttGroup = new QActionGroup(pttMenu);
     pttGroup->setExclusive(true);
 
-    auto makePttAction = [&](const QString &label, NativeRTTYTx::PttMode mode) {
-      auto *act = pttMenu->addAction(label);
-      act->setCheckable(true);
-      pttGroup->addAction(act);
-      return act;
+    auto makePttAct = [&](const QString &label) {
+      auto *a = pttMenu->addAction(label);
+      a->setCheckable(true);
+      pttGroup->addAction(a);
+      return a;
     };
-
-    auto *pttNoneAct   = makePttAction(QStringLiteral("None (VOX / manual)"),   NativeRTTYTx::PttMode::None);
-    auto *pttTciAct    = makePttAction(QStringLiteral("TCI  (trx:0,true/false)"), NativeRTTYTx::PttMode::TCI);
-    auto *pttSerialAct = makePttAction(QStringLiteral("Serial  (rigctld)"),       NativeRTTYTx::PttMode::Serial);
-    auto *pttBothAct   = makePttAction(QStringLiteral("TCI + Serial"),            NativeRTTYTx::PttMode::TCIAndSerial);
+    auto *pttNoneAct   = makePttAct(QStringLiteral("None (VOX / manual)"));
+    auto *pttTciAct    = makePttAct(QStringLiteral("TCI  (trx:0,true/false)"));
+    auto *pttSerialAct = makePttAct(QStringLiteral("Serial  (Hamlib/rigctld)"));
+    auto *pttBothAct   = makePttAct(QStringLiteral("TCI + Serial"));
     pttMenu->addSeparator();
-    auto *pttSettingsAction = pttMenu->addAction(QStringLiteral("PTT / rigctld settings…"));
+    auto *pttCfgAct    = pttMenu->addAction(QStringLiteral("Serial / PTT settings…"));
 
-    // Restore saved PTT mode
-    const int savedPttMode = QSettings().value(QStringLiteral("tx/pttMode"), 1).toInt(); // default TCI
+    const int savedPtt = QSettings().value(QStringLiteral("tx/pttMode"), 1).toInt();
     NativeRTTYTx::PttMode initPtt = NativeRTTYTx::PttMode::TCI;
-    switch (savedPttMode) {
+    switch (savedPtt) {
     case 0: initPtt = NativeRTTYTx::PttMode::None;         pttNoneAct->setChecked(true);   break;
     case 1: initPtt = NativeRTTYTx::PttMode::TCI;          pttTciAct->setChecked(true);    break;
     case 2: initPtt = NativeRTTYTx::PttMode::Serial;       pttSerialAct->setChecked(true); break;
@@ -498,62 +478,48 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     default: pttTciAct->setChecked(true); break;
     }
     tx_.setPttMode(initPtt);
-
-    // Restore rigctld host/port
     tx_.setRigctlHost(QSettings().value(QStringLiteral("tx/rigctlHost"), QStringLiteral("127.0.0.1")).toString());
     tx_.setRigctlPort(QSettings().value(QStringLiteral("tx/rigctlPort"), 4532).toInt());
 
-    auto applyPttMode = [this, pttNoneAct, pttTciAct, pttSerialAct, pttBothAct] {
-      NativeRTTYTx::PttMode m = NativeRTTYTx::PttMode::TCI;
-      int idx = 1;
+    connect(pttGroup, &QActionGroup::triggered, this,
+            [this, pttNoneAct, pttTciAct, pttSerialAct, pttBothAct](QAction *) {
+      NativeRTTYTx::PttMode m = NativeRTTYTx::PttMode::TCI; int idx = 1;
       if (pttNoneAct->isChecked())   { m = NativeRTTYTx::PttMode::None;         idx = 0; }
       if (pttTciAct->isChecked())    { m = NativeRTTYTx::PttMode::TCI;          idx = 1; }
       if (pttSerialAct->isChecked()) { m = NativeRTTYTx::PttMode::Serial;       idx = 2; }
       if (pttBothAct->isChecked())   { m = NativeRTTYTx::PttMode::TCIAndSerial; idx = 3; }
       QSettings().setValue(QStringLiteral("tx/pttMode"), idx);
       tx_.setPttMode(m);
-    };
-    connect(pttGroup, &QActionGroup::triggered, this, [applyPttMode](QAction *) { applyPttMode(); });
-
-    connect(pttSettingsAction, &QAction::triggered, this, [this] {
-      QSettings settings;
-      QDialog dialog(this);
-      dialog.setWindowTitle(QStringLiteral("PTT / rigctld Settings"));
-      auto *form = new QFormLayout(&dialog);
-      auto *hostEdit = new QLineEdit(
-        settings.value(QStringLiteral("tx/rigctlHost"), QStringLiteral("127.0.0.1")).toString(), &dialog);
-      auto *portSpin = new QSpinBox(&dialog);
-      portSpin->setRange(1, 65535);
-      portSpin->setValue(settings.value(QStringLiteral("tx/rigctlPort"), 4532).toInt());
-      form->addRow(QStringLiteral("rigctld host"), hostEdit);
-      form->addRow(QStringLiteral("rigctld port"), portSpin);
-      auto *note = new QLabel(
-        QStringLiteral("rigctld is part of Hamlib. Start it with:\n  rigctld -m <model> -r <port> -t 4532"),
-        &dialog);
-      note->setWordWrap(true);
-      form->addRow(note);
-      auto *buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, &dialog);
-      form->addRow(buttons);
-      connect(buttons, &QDialogButtonBox::accepted, &dialog, [&] {
-        settings.setValue(QStringLiteral("tx/rigctlHost"), hostEdit->text());
-        settings.setValue(QStringLiteral("tx/rigctlPort"), portSpin->value());
-        tx_.setRigctlHost(hostEdit->text());
-        tx_.setRigctlPort(portSpin->value());
-        dialog.accept();
-      });
-      connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-      dialog.exec();
     });
+
+    connect(pttCfgAct, &QAction::triggered, this, [this] { openPttSettingsDialog(); });
 
     setupPopup->addAction(QStringLiteral("Audio Devices…"), this,
                           [this] { openAudioSettingsDialog(); });
-    // Start RX immediately if standalone RX is already on
-    if (useStandaloneRx) {
-      QTimer::singleShot(0, this, [this] { startStandaloneRx(); });
-    }
   }
   setupPopup->addSeparator();
 #endif
+
+  // ---- TCI off (no TCI connection at all) ------------------------
+  auto *tciOffAction = setupPopup->addAction(QStringLiteral("TCI off (standalone only)"));
+  tciOffAction->setCheckable(true);
+  tciOffAction->setChecked(QSettings().value(QStringLiteral("tci/disabled"), false).toBool());
+  tciOffAction->setToolTip(QStringLiteral(
+      "Disable TCI completely. No WebSocket connection. Use soundcard + serial PTT only.\n"
+      "The TCI I/Q panel is hidden; spectrum/waterfall fills the space."));
+  connect(tciOffAction, &QAction::toggled, this, [this](bool off) {
+    QSettings().setValue(QStringLiteral("tci/disabled"), off);
+    applyTciOffMode(off);
+  });
+  tciDisabled_ = QSettings().value(QStringLiteral("tci/disabled"), false).toBool();
+  if (tciDisabled_) {
+    QTimer::singleShot(0, this, [this] { applyTciOffMode(true); });
+  }
+
+  // ---- Settings TCI… dialoog ------------------------------------
+  setupPopup->addAction(QStringLiteral("Settings TCI…"), this, [this] { openTciSettingsDialog(); });
+
+  setupPopup->addSeparator();
   auto *sendLogAction = setupPopup->addAction(QStringLiteral("Send log via UDP"));
   sendLogAction->setCheckable(true);
   sendLogAction->setChecked(QSettings().value(QStringLiteral("log/sendViaUdp"), true).toBool());
@@ -3378,5 +3344,145 @@ void MainWindow::exportContestCabrillo() {
   const QByteArray bytes = lines.join(QStringLiteral("\r\n")).toUtf8() + "\r\n";
   if (!output.open(QIODevice::WriteOnly) || output.write(bytes) != bytes.size() || !output.commit()) {
     QMessageBox::critical(this, QStringLiteral("Cabrillo"), output.errorString());
+  }
+}
+
+// ---- PTT / Serial settings dialog ----------------------------------------
+void MainWindow::openPttSettingsDialog()
+{
+  QSettings settings;
+  QDialog dialog(this);
+  dialog.setWindowTitle(QStringLiteral("Serial / PTT Settings"));
+  auto *form = new QFormLayout(&dialog);
+
+  auto *hostEdit = new QLineEdit(
+    settings.value(QStringLiteral("tx/rigctlHost"), QStringLiteral("127.0.0.1")).toString(), &dialog);
+  auto *portSpin = new QSpinBox(&dialog);
+  portSpin->setRange(1, 65535);
+  portSpin->setValue(settings.value(QStringLiteral("tx/rigctlPort"), 4532).toInt());
+
+  form->addRow(QStringLiteral("rigctld host"), hostEdit);
+  form->addRow(QStringLiteral("rigctld port"), portSpin);
+
+  auto *note = new QLabel(
+    QStringLiteral(
+      "rigctld is part of Hamlib. Start externally with:\n"
+      "  rigctld -m <model> -r <comport> -t 4532\n\n"
+      "All Hamlib-supported rigs work via rigctld.\n"
+      "Download Hamlib: https://hamlib.github.io/"),
+    &dialog);
+  note->setWordWrap(true);
+  form->addRow(note);
+
+  auto *buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, &dialog);
+  form->addRow(buttons);
+
+  connect(buttons, &QDialogButtonBox::accepted, &dialog, [&] {
+    settings.setValue(QStringLiteral("tx/rigctlHost"), hostEdit->text());
+    settings.setValue(QStringLiteral("tx/rigctlPort"), portSpin->value());
+    tx_.setRigctlHost(hostEdit->text());
+    tx_.setRigctlPort(portSpin->value());
+    dialog.accept();
+  });
+  connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+  dialog.exec();
+}
+
+// ---- Settings TCI dialog --------------------------------------------------
+void MainWindow::openTciSettingsDialog()
+{
+  QSettings settings;
+  QDialog dialog(this);
+  dialog.setWindowTitle(QStringLiteral("Settings TCI"));
+  auto *form = new QFormLayout(&dialog);
+
+  // Auto setup toggle
+  auto *autoSetup = new QCheckBox(QStringLiteral("Auto setup TCI on connect"), &dialog);
+  autoSetup->setChecked(settings.value(QStringLiteral("tci/autoSetup"), true).toBool());
+  autoSetup->setToolTip(QStringLiteral(
+    "Set SDR to DIGL mode and correct pitch on connect. Restore original settings on disconnect."));
+  form->addRow(autoSetup);
+
+  // Auto setup on band change
+  auto *bandChange = new QCheckBox(QStringLiteral("Auto setup on band change"), &dialog);
+  bandChange->setChecked(settings.value(QStringLiteral("tci/autoSetupBandChange"), true).toBool());
+  bandChange->setEnabled(autoSetup->isChecked());
+  connect(autoSetup, &QCheckBox::toggled, bandChange, &QWidget::setEnabled);
+  form->addRow(bandChange);
+
+  form->addRow(new QLabel(QStringLiteral(""), &dialog)); // spacer
+
+  // Dialect
+  auto *dialectCombo = new QComboBox(&dialog);
+  dialectCombo->addItem(QStringLiteral("deskHPSDR"),  QStringLiteral("deskhpsdr"));
+  dialectCombo->addItem(QStringLiteral("Thetis"),     QStringLiteral("thetis"));
+  dialectCombo->addItem(QStringLiteral("Generic TCI"),QStringLiteral("generic"));
+  const QString savedDialect = settings.value(QStringLiteral("tci/dialect"),
+                                              QStringLiteral("deskhpsdr")).toString();
+  for (int i = 0; i < dialectCombo->count(); ++i) {
+    if (dialectCombo->itemData(i).toString() == savedDialect) {
+      dialectCombo->setCurrentIndex(i);
+      break;
+    }
+  }
+  form->addRow(QStringLiteral("TCI dialect"), dialectCombo);
+
+  // Sample rate
+  auto *srCombo = new QComboBox(&dialog);
+  srCombo->addItem(QStringLiteral("48 kHz"),  48000);
+  srCombo->addItem(QStringLiteral("96 kHz"),  96000);
+  srCombo->addItem(QStringLiteral("192 kHz"), 192000);
+  const int savedSr = settings.value(QStringLiteral("tci/sampleRate"), 48000).toInt();
+  for (int i = 0; i < srCombo->count(); ++i) {
+    if (srCombo->itemData(i).toInt() == savedSr) {
+      srCombo->setCurrentIndex(i);
+      break;
+    }
+  }
+  form->addRow(QStringLiteral("I/Q sample rate"), srCombo);
+
+  auto *buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, &dialog);
+  form->addRow(buttons);
+
+  connect(buttons, &QDialogButtonBox::accepted, &dialog, [&] {
+    settings.setValue(QStringLiteral("tci/autoSetup"),       autoSetup->isChecked());
+    settings.setValue(QStringLiteral("tci/autoSetupBandChange"), bandChange->isChecked());
+    settings.setValue(QStringLiteral("tci/dialect"),
+                      dialectCombo->currentData().toString());
+    settings.setValue(QStringLiteral("tci/sampleRate"),
+                      srCombo->currentData().toInt());
+    dialog.accept();
+  });
+  connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+  dialog.exec();
+}
+
+// ---- TCI off — hide/show TCI elements ------------------------------------
+void MainWindow::applyTciOffMode(bool disabled)
+{
+  tciDisabled_ = disabled;
+
+  // Hide the TCI I/Q pan widget when TCI is disabled
+  if (iqPan_) {
+    iqPan_->setVisible(!disabled);
+  }
+
+  if (disabled) {
+    // Disconnect TCI if currently connected
+    if (tci_.isConnected()) {
+      tci_.disconnectFromHost();
+    }
+    // Switch to soundcard audio mode automatically
+#ifdef HAVE_STANDALONE_TX
+    tx_.setMode(NativeRTTYTx::Mode::Standalone);
+    startStandaloneRx();
+#endif
+  } else {
+    // Restore TCI audio mode if previously set
+#ifdef HAVE_STANDALONE_TX
+    const bool useSoundcard = QSettings().value(QStringLiteral("audio/mode"), 0).toInt() == 1;
+    tx_.setMode(useSoundcard ? NativeRTTYTx::Mode::Standalone : NativeRTTYTx::Mode::TCI);
+    if (!useSoundcard) stopStandaloneRx();
+#endif
   }
 }
