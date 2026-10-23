@@ -1,4 +1,4 @@
-# This is a fork from Rttypad bj DL1BZ,
+# This is a fork from Rttypad bij DL1BZ,
 # its a test to extend rttypad with tx.
 
 Trying to port the rtty-enigene from deskhpsr to add to rttypad so its works on tci.
