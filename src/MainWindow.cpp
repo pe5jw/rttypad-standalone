@@ -519,13 +519,20 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
 
   // Apply saved TCI dialect (sets PTT suffix etc.)
   {
-    const QString dialect = QSettings().value(QStringLiteral("tci/dialect"),
-                                               QStringLiteral("generic")).toString();
-    applyTciDialect(dialect);
+    const int dialectInt = QSettings().value(QStringLiteral("tci/dialect"),
+                             static_cast<int>(TCIClient::Dialect::Auto)).toInt();
+    applyTciDialect(static_cast<TCIClient::Dialect>(dialectInt));
   }
 
   // Wire TX audio tap → TCI binary frames (safe cross-thread via Qt queued)
   connectTciTxAudio();
+
+  // Log auto-detect dialect changes to status bar
+  connect(&tci_, &TCIClient::dialectResolved, this, [this](TCIClient::Dialect d) {
+    statusBar()->showMessage(
+      QStringLiteral("TCI dialect auto-detect: %1").arg(TCIClient::dialectName(d)), 5000);
+    qDebug() << "TCI dialect resolved (auto):" << TCIClient::dialectName(d);
+  });
 
   // ---- Settings TCI… dialoog ------------------------------------
   setupPopup->addAction(QStringLiteral("Settings TCI…"), this, [this] { openTciSettingsDialog(); });
@@ -3368,31 +3375,53 @@ void MainWindow::openTciSettingsDialog()
 
   form->addRow(new QLabel(QStringLiteral(""), &dialog)); // spacer
 
-  // Dialect — describes what non-standard commands are sent, not which app
+  // Dialect — controls which init commands are sent and whether IQ stream is used.
+  // Stored as int (TCIClient::Dialect cast).
   auto *dialectCombo = new QComboBox(&dialog);
-  // "deskhpsdr": sends rtty_enable:1 + rtty_* parameters on connect (deskHPSDR extension)
-  dialectCombo->addItem(
-    QStringLiteral("deskHPSDR (rtty_enable + rtty_* commands)"),
-    QStringLiteral("deskhpsdr"));
-  // "ptt_with_tci_suffix": plain TCI + trx:0,true,tci; for PTT
-  //   SDRoxide and Bolt SDR use this variant
-  dialectCombo->addItem(
-    QStringLiteral("trx:0,true,tci;  (SDRoxide / Bolt SDR)"),
-    QStringLiteral("ptt_with_tci_suffix"));
-  // "generic": plain TCI, trx:0,true; for PTT, no rtty_* commands
-  //   Works with Thetis and most standard TCI servers
-  dialectCombo->addItem(
-    QStringLiteral("trx:0,true;  (Thetis / Generic TCI)"),
-    QStringLiteral("generic"));
-  const QString savedDialect = settings.value(QStringLiteral("tci/dialect"),
-                                              QStringLiteral("generic")).toString();
+
+  // Entries: human label, data = int(TCIClient::Dialect)
+  struct DialectEntry { TCIClient::Dialect value; const char *label; };
+  static const DialectEntry kDialects[] = {
+    { TCIClient::Dialect::Auto,      "Auto-detect (device: header)" },
+    { TCIClient::Dialect::Generic,   "Generic TCI  —  ExpertSDR2/3, Zeus, NereusSDR, Kainos" },
+    { TCIClient::Dialect::DeskHPSDR, "deskHPSDR / Thetis  —  rtty_enable:1 op verbinding" },
+    { TCIClient::Dialect::BoltSDR,   "BoltSDR / Rigflow  —  geen IQ stream, poort 40001" },
+    { TCIClient::Dialect::SDROxide,  "SDROxide  —  geen IQ stream, TCI client+server" },
+  };
+  for (const auto &e : kDialects) {
+    dialectCombo->addItem(QLatin1String(e.label), static_cast<int>(e.value));
+  }
+  dialectCombo->setToolTip(QStringLiteral(
+    "Kies het dialect dat overeenkomt met jouw SDR software.\n"
+    "Auto-detect leest de 'device:' melding bij verbinding en kiest automatisch.\n"
+    "Generic TCI werkt voor de meeste apps; kies alleen een specifiek dialect\n"
+    "als de standaard niet werkt."));
+
+  const int savedDialect = settings.value(QStringLiteral("tci/dialect"),
+                                          static_cast<int>(TCIClient::Dialect::Auto)).toInt();
   for (int i = 0; i < dialectCombo->count(); ++i) {
-    if (dialectCombo->itemData(i).toString() == savedDialect) {
+    if (dialectCombo->itemData(i).toInt() == savedDialect) {
       dialectCombo->setCurrentIndex(i);
       break;
     }
   }
-  form->addRow(QStringLiteral("TCI variant"), dialectCombo);
+  form->addRow(QStringLiteral("TCI dialect"), dialectCombo);
+
+  // Active dialect info label (shows what is currently resolved when Auto)
+  auto *activeDialectLabel = new QLabel(&dialog);
+  activeDialectLabel->setStyleSheet(QStringLiteral("color: gray; font-style: italic;"));
+  {
+    const TCIClient::Dialect active = tci_.activeDialect();
+    const bool isAuto = (tci_.dialect() == TCIClient::Dialect::Auto);
+    if (isAuto) {
+      activeDialectLabel->setText(QStringLiteral("Huidig: %1 (auto-detect)")
+        .arg(TCIClient::dialectName(active)));
+    } else {
+      activeDialectLabel->setText(QStringLiteral("Huidig: %1")
+        .arg(TCIClient::dialectName(active)));
+    }
+  }
+  form->addRow(QStringLiteral(""), activeDialectLabel);
 
   // Sample rate
   auto *srCombo = new QComboBox(&dialog);
@@ -3412,39 +3441,30 @@ void MainWindow::openTciSettingsDialog()
   form->addRow(buttons);
 
   connect(buttons, &QDialogButtonBox::accepted, &dialog, [&] {
-    settings.setValue(QStringLiteral("tci/autoSetup"),       autoSetup->isChecked());
+    settings.setValue(QStringLiteral("tci/autoSetup"),          autoSetup->isChecked());
     settings.setValue(QStringLiteral("tci/autoSetupBandChange"), bandChange->isChecked());
-    const QString dialect = dialectCombo->currentData().toString();
-    settings.setValue(QStringLiteral("tci/dialect"),   dialect);
+    const int dialectInt = dialectCombo->currentData().toInt();
+    settings.setValue(QStringLiteral("tci/dialect"),   dialectInt);
     settings.setValue(QStringLiteral("tci/sampleRate"), srCombo->currentData().toInt());
-    applyTciDialect(dialect);
+    applyTciDialect(static_cast<TCIClient::Dialect>(dialectInt));
     dialog.accept();
   });
   connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
   dialog.exec();
 }
 
-// ---- Apply TCI dialect — sets PTT suffix and other dialect quirks ----------
-void MainWindow::applyTciDialect(const QString &dialect)
+// ---- Apply TCI dialect — sets dialect on TCIClient and PTT suffix ----------
+void MainWindow::applyTciDialect(TCIClient::Dialect dialect)
 {
-  // Map saved dialect key → TCIClient::Dialect (controls which init commands are sent)
-  TCIClient::Dialect tciDialect = TCIClient::Dialect::Generic;
-  if (dialect == QStringLiteral("deskhpsdr")) {
-    tciDialect = TCIClient::Dialect::DeskHPSDR;
-  }
-  tci_.setDialect(tciDialect);
+  tci_.setDialect(dialect);
 
-  // PTT suffix: some servers require ",tci" on trx:0,true/false to route
-  // the TCI audio stream to the TX path (SDRoxide uses this internally).
-  // deskHPSDR and Thetis accept plain trx:0,true/false without suffix.
-  QString suffix;
-  if (dialect == QStringLiteral("ptt_with_tci_suffix")) {
-    suffix = QStringLiteral(",tci");
-  }
+  // PTT suffix: SDROxide requires ",tci" on trx:0,true/false to route audio
+  // to the TX path. All other dialects use plain trx:0,true/false.
+  const QString suffix = (dialect == TCIClient::Dialect::SDROxide)
+                         ? QStringLiteral(",tci") : QString();
   tx_.setTciPttSuffix(suffix);
 
-  qDebug() << "TCI dialect:" << dialect
-           << "deskHPSDR extensions:" << (tciDialect == TCIClient::Dialect::DeskHPSDR)
+  qDebug() << "TCI dialect set:" << TCIClient::dialectName(dialect)
            << "PTT suffix:" << (suffix.isEmpty() ? "(none)" : suffix);
 }
 

@@ -77,7 +77,7 @@ private:
   void openPttSettingsDialog();
   void openTciSettingsDialog();
   void applyConnectionMode(bool tciMode);  // true = TCI, false = audio/soundcard
-  void applyTciDialect(const QString &dialect);
+  void applyTciDialect(TCIClient::Dialect dialect);
   void connectTciTxAudio();   // wire txAudioBlock → tci_.sendTxAudioFrame
   bool tciConnMode_ = true;  // true = TCI connection, false = soundcard audio
   QLineEdit *host_ = nullptr;

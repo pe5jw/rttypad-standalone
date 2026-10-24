@@ -29,13 +29,55 @@ float readFloat32LE(const char *p) {
 }
 } // namespace
 
+// static
+QString TCIClient::dialectName(Dialect d) {
+  switch (d) {
+  case Dialect::Auto:      return QStringLiteral("Auto-detect");
+  case Dialect::Generic:   return QStringLiteral("Generic TCI (ExpertSDR/Zeus)");
+  case Dialect::DeskHPSDR: return QStringLiteral("deskHPSDR / Thetis");
+  case Dialect::BoltSDR:   return QStringLiteral("BoltSDR");
+  case Dialect::SDROxide:  return QStringLiteral("SDROxide");
+  }
+  return QStringLiteral("Unknown");
+}
+
+// static
+TCIClient::Dialect TCIClient::detectDialect(const QString &deviceString) {
+  const QString dev = deviceString.trimmed().toLower();
+  if (dev.isEmpty()) return Dialect::Generic;
+
+  // deskHPSDR: does not set device: yet, but Thetis uses ExpertSDR2.
+  // Kainos deliberately reports "Thetis" → treat same as deskHPSDR.
+  if (dev.contains(QLatin1String("deskhpsdr"))) return Dialect::DeskHPSDR;
+  if (dev.contains(QLatin1String("thetis")))    return Dialect::DeskHPSDR;
+
+  // BoltSDR/Rigflow: typically on port 40001; device string not confirmed.
+  if (dev.contains(QLatin1String("boltsdr")) ||
+      dev.contains(QLatin1String("rigflow")))   return Dialect::BoltSDR;
+
+  // SDROxide acts as client + server; partial feature set.
+  if (dev.contains(QLatin1String("sdroxide")))  return Dialect::SDROxide;
+
+  // Zeus, NereusSDR, ExpertSDR2/3, Lyra → Generic
+  return Dialect::Generic;
+}
+
 TCIClient::TCIClient(QObject *parent) : QObject(parent) {
   connect(&socket_, &QWebSocket::connected, this, [this] {
+    initDone_ = false;
+    // Resolve dialect before sending anything.
+    resolvedDialect_ = (dialect_ == Dialect::Auto) ? Dialect::Generic : dialect_;
     emit logLine(QStringLiteral("TCI connected"));
     emit connected();
     sendInitialTCICommands();
   });
-  connect(&socket_, &QWebSocket::textMessageReceived, this, &TCIClient::textMessageReceived);
+  connect(&socket_, &QWebSocket::textMessageReceived, this, [this](const QString &msg) {
+    // Intercept init lines for auto-detect before forwarding.
+    if (!initDone_) {
+      handleInitLine(msg.trimmed());
+    }
+    emit textMessageReceived(msg);
+  });
   connect(&socket_, &QWebSocket::binaryMessageReceived, this, [this](const QByteArray & data) {
     const TCIStreamInfo info = parseStreamInfo(data);
     emit binaryMessageReceived(data.size(), info);
@@ -84,6 +126,9 @@ void TCIClient::connectToHost(const QString &host, quint16 port) {
 void TCIClient::disconnectFromHost() {
   intentionallyClosed_ = true;
   ++connectionGeneration_;
+  initDone_ = false;
+  // Reset auto-detect so the next connection re-detects from device: line.
+  if (dialect_ == Dialect::Auto) resolvedDialect_ = Dialect::Generic;
   if (isConnected()) {
     sendText(QStringLiteral("iq_stop:0;"));
     sendText(QStringLiteral("audio_stop:0;"));
@@ -109,24 +154,50 @@ void TCIClient::sendBinaryData(const QByteArray &data) {
   }
 }
 
+void TCIClient::handleInitLine(const QString &line) {
+  if (line == QLatin1String("ready")) {
+    initDone_ = true;
+    return;
+  }
+  // Parse "device:SomeName;" to detect dialect in Auto mode.
+  if (dialect_ == Dialect::Auto && line.startsWith(QLatin1String("device:"))) {
+    QString val = line;
+    val.remove(0, 7);  // strip "device:"
+    if (val.endsWith(QLatin1Char(';'))) val.chop(1);
+    const Dialect detected = detectDialect(val);
+    if (detected != resolvedDialect_) {
+      resolvedDialect_ = detected;
+      emit logLine(QStringLiteral("TCI auto-detect: device='%1' → dialect=%2")
+                   .arg(val, dialectName(detected)));
+      emit dialectResolved(detected);
+    }
+  }
+}
+
 void TCIClient::sendInitialTCICommands() {
   const quint64 generation = connectionGeneration_;
 
-  // deskHPSDR only: native RTTY engine must be enabled explicitly.
-  // Other TCI servers (SDRoxide, Bolt, Thetis, …) do not understand this
-  // command and may reject the session if it is sent.
-  if (dialect_ == Dialect::DeskHPSDR) {
+  // deskHPSDR dialect only: native RTTY engine must be enabled explicitly.
+  // Other TCI servers (SDROxide, BoltSDR, ExpertSDR, …) do not understand
+  // this command and may reject the session if it is sent.
+  // NOTE: in Auto mode resolvedDialect_ may still be Generic here (device:
+  // line not yet seen). deskHPSDR does not send device: reliably, so we
+  // rely on the user having chosen the dialect manually for deskHPSDR.
+  if (resolvedDialect_ == Dialect::DeskHPSDR) {
     sendText(QStringLiteral("rtty_enable:1;"));
   }
 
-  // Standard TCI: request RX audio and IQ streams.
-  const QStringList commands = {
+  // Build command list. IQ stream is skipped for dialects that don't support it.
+  QStringList commands = {
     QStringLiteral("audio_stream_sample_type:float32;"),
     QStringLiteral("audio_stream_channels:1;"),
     QStringLiteral("audio_stream_samples;"),
     QStringLiteral("audio_start:0;"),
-    QStringLiteral("iq_start:0;")
   };
+  if (!hasNoIqStream()) {
+    commands.append(QStringLiteral("iq_start:0;"));
+  }
+
   for (int i = 0; i < commands.size(); ++i) {
     QTimer::singleShot((i + 1) * 50, this, [this, generation, cmd = commands.at(i)] {
       if (generation == connectionGeneration_ && isConnected())

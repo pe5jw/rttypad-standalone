@@ -32,10 +32,17 @@ Q_DECLARE_METATYPE(TCIStreamInfo)
 class TCIClient final : public QObject {
   Q_OBJECT
 public:
-  // TCI dialect — controls which non-standard commands are sent on connect.
-  // "deskhpsdr" : sends rtty_enable:1 and rtty_* parameters (deskHPSDR extension)
-  // anything else: plain TCI only (iq_start, audio_start, no rtty_ commands)
-  enum class Dialect { Generic, DeskHPSDR };
+  // TCI dialect — controls which non-standard commands are sent on connect
+  // and whether IQ streaming is attempted.
+  //
+  //  Auto       : detect from "device:" in the init block; fallback = Generic
+  //  Generic    : plain TCI (ExpertSDR, Zeus, NereusSDR, Kainos)
+  //               IQ stream ✓, RX/TX audio ✓, port 50001
+  //  DeskHPSDR  : plain TCI + rtty_enable:1 on connect
+  //               IQ stream ✓, RX/TX audio ✓, port 50001
+  //  BoltSDR    : no IQ stream (binary stream omitted), RX audio only port 40001
+  //  SDROxide   : no IQ stream; acts as TCI client+server; partial CAT pass-through
+  enum class Dialect { Auto, Generic, DeskHPSDR, BoltSDR, SDROxide };
 
   explicit TCIClient(QObject *parent = nullptr);
   bool isConnected() const;
@@ -46,7 +53,21 @@ public:
 
   void setDialect(Dialect d) { dialect_ = d; }
   Dialect dialect() const { return dialect_; }
-  bool isDeskHPSDR() const { return dialect_ == Dialect::DeskHPSDR; }
+  // Active dialect: if Auto, returns the resolved dialect (from device: header)
+  // or Generic while not yet resolved.
+  Dialect activeDialect() const { return resolvedDialect_; }
+
+  bool isDeskHPSDR() const { return resolvedDialect_ == Dialect::DeskHPSDR; }
+  // Returns true for dialects that do NOT support IQ streaming.
+  bool hasNoIqStream() const {
+    return resolvedDialect_ == Dialect::BoltSDR ||
+           resolvedDialect_ == Dialect::SDROxide;
+  }
+
+  // Human-readable name for a dialect.
+  static QString dialectName(Dialect d);
+  // Resolve a "device:" string to a dialect (used for auto-detect).
+  static Dialect detectDialect(const QString &deviceString);
 
   // Send a block of mono float32 PCM samples as a TCI TX audio stream frame.
   // sampleRate must match what the server expects (typically 8000 Hz for RTTY).
@@ -56,6 +77,8 @@ signals:
   void logLine(const QString &line);
   void connected();
   void disconnected(const QString &error);
+  // Emitted when the active dialect changes (Auto resolves, or user changes it).
+  void dialectResolved(TCIClient::Dialect dialect);
   void textMessageReceived(const QString &message);
   void binaryMessageReceived(qsizetype length, TCIStreamInfo info);
   void rxAudioFrameReceived(const QByteArray &data, TCIStreamInfo info);
@@ -64,8 +87,11 @@ signals:
 private:
   static TCIStreamInfo parseStreamInfo(const QByteArray &data);
   void sendInitialTCICommands();
+  void handleInitLine(const QString &line);
   QWebSocket socket_;
   bool intentionallyClosed_ = false;
   quint64 connectionGeneration_ = 0;
-  Dialect dialect_ = Dialect::Generic;
+  Dialect dialect_ = Dialect::Auto;
+  Dialect resolvedDialect_ = Dialect::Generic;  // effective dialect during session
+  bool initDone_ = false;  // true after "ready" line received
 };
